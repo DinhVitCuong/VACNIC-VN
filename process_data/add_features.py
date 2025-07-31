@@ -319,7 +319,7 @@ def process_dataset(input_json_path, output_json_path, vncore):
             for face in faces:
                 face_emb = get_face_embedding(face)
                 faces_embbed.append(face_emb)
-            face_emb_path = os.path.join("/data/npl/ICEK/VACNIC/data/train/faces", f"{hash_id}.npy")
+            face_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/faces", f"{hash_id}.npy")
             np.save(face_emb_path, faces_embbed)
             new_entry["face_emb_dir"] = face_emb_path
         else:
@@ -332,7 +332,7 @@ def process_dataset(input_json_path, output_json_path, vncore):
             for obj in objects:
                 object_emb = extract_object_embedding(image_path, image_url, obj)
                 objects_embbed.append(object_emb)
-            object_emb_path = os.path.join("/data/npl/ICEK/VACNIC/data/train/objects", f"{hash_id}.npy")
+            object_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/objects", f"{hash_id}.npy")
             np.save(object_emb_path, objects_embbed)
             new_entry["obj_emb_dir"] = object_emb_path
         else:
