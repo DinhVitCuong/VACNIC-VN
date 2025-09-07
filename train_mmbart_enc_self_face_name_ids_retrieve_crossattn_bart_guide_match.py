@@ -79,6 +79,13 @@ parser.add_argument("--init_attn_weight", default=False, type=lambda x: (str(x).
 parser.add_argument("--margin", type=float, default=1.0)
 parser.add_argument("--alpha", type=float, default=1.0)
 
+# VIWIKI
+parser.add_argument("--viwiki_train_json", type=str, default=None)
+parser.add_argument("--viwiki_val_json",   type=str, default=None)
+parser.add_argument("--viwiki_test_json",  type=str, default=None)
+# If your image paths start with DATADIR/..., we’ll join to this root
+parser.add_argument("--viwiki_datadir",    type=str, default=None)
+
 args = parser.parse_args()
 
 
@@ -588,6 +595,7 @@ if __name__ == "__main__":
     import torch
     import clip
     from src.data.goodnews_dataset_entity_type_newsmep_ent_ent_pos import GoodNewsDictDatasetEntityTypeFixLenEntPos, collate_fn_goodnews_entity_type
+    from src.data.viwiki_dataset_entity_type_ent_pos import ViWikiDictDatasetEntityTypeFixLenEntPos, collate_fn_viwiki_entity_type
 
     from venv import create
     
@@ -806,6 +814,97 @@ if __name__ == "__main__":
         test_loader = DataLoader(test_data, args.test_batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_fn_goodnews_entity_type)
 
         wandb.log({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
+    elif args.data_type == "viwiki":
+        # JSONs produced from your demo.json (e.g., via the converter I gave you)
+        # Defaults to: <DATA_DIR>/viwiki/{train,val,test}.json if not explicitly passed
+        train_json = args.viwiki_train_json or os.path.join(args.data_dir, "train.json")
+        val_json   = args.viwiki_val_json   or os.path.join(args.data_dir, "val.json")
+        test_json  = args.viwiki_test_json  or os.path.join(args.data_dir, "test.json")
+
+        with open(train_json, "r", encoding="utf-8") as f:
+            train_dict = json.load(f)
+        with open(val_json, "r", encoding="utf-8") as f:
+            val_dict = json.load(f)
+        with open(test_json, "r", encoding="utf-8") as f:
+            test_dict = json.load(f)
+
+        # If your image_path values start with "DATADIR/...", pass the real folder here.
+        # Otherwise, leave it None and the loader will use absolute/relative paths as-is.
+        data_base_dir = args.viwiki_datadir or args.data_dir
+
+        # Make sure <PERSON>/<ORGNORP>/<GPELOC> are registered (we already added them above)
+        person_token_id = tokenizer_dataset.convert_tokens_to_ids("<PERSON>")
+
+        train_data = ViWikiDictDatasetEntityTypeFixLenEntPos(
+            data_dict=train_dict,
+            data_base_dir=data_base_dir,
+            tokenizer=tokenizer_dataset,
+            use_clip_tokenizer=True,
+            entity_token_start=args.ent_start_token,
+            entity_token_end=args.ent_end_token,
+            transform=img_transform,
+            max_article_len=args.article_max_length,
+            max_ner_type_len=args.max_ner_type_len,
+            max_ner_type_len_gt=args.max_ner_type_len_gt,
+            retrieved_sent=True,
+            person_token_id=person_token_id,
+            topk_paragraphs=args.num_sentences,   # use same knob as nytimes/goodnews
+        )
+        train_sampler = DistributedSampler(dataset=train_data, rank=local_rank, shuffle=True)
+        train_loader  = DataLoader(
+            train_data, args.train_batch_size,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn_viwiki_entity_type,
+            sampler=train_sampler
+        )
+
+        val_data = ViWikiDictDatasetEntityTypeFixLenEntPos(
+            data_dict=val_dict,
+            data_base_dir=data_base_dir,
+            tokenizer=tokenizer_dataset,
+            use_clip_tokenizer=True,
+            entity_token_start=args.ent_start_token,
+            entity_token_end=args.ent_end_token,
+            transform=img_transform,
+            max_article_len=args.article_max_length,
+            max_ner_type_len=args.max_ner_type_len,
+            max_ner_type_len_gt=args.max_ner_type_len_gt,
+            retrieved_sent=True,
+            person_token_id=person_token_id,
+            topk_paragraphs=args.num_sentences,
+        )
+        val_loader = DataLoader(
+            val_data, args.val_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn_viwiki_entity_type
+        )
+
+        test_data = ViWikiDictDatasetEntityTypeFixLenEntPos(
+            data_dict=test_dict,
+            data_base_dir=data_base_dir,
+            tokenizer=tokenizer_dataset,
+            use_clip_tokenizer=True,
+            entity_token_start=args.ent_start_token,
+            entity_token_end=args.ent_end_token,
+            transform=img_transform,
+            max_article_len=args.article_max_length,
+            max_ner_type_len=args.max_ner_type_len,
+            max_ner_type_len_gt=args.max_ner_type_len_gt,
+            retrieved_sent=True,
+            person_token_id=person_token_id,
+            topk_paragraphs=args.num_sentences,
+        )
+        test_loader = DataLoader(
+            test_data, args.test_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn_viwiki_entity_type
+        )
+
+        wandb.log({"train size": len(train_data), "val size": len(val_data), "test size": len(test_data)})
+
+    
     else:
         data_base_dir = {} # to be filled for VisualNews
         val_loader = {}
