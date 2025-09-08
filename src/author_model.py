@@ -1147,8 +1147,10 @@ class BartEncoder(BartPretrainedModel):
         if not only_image:
             # ent embedding layer
             # self.embed_tokens_ner = copy.deepcopy(self.embed_tokens)
-            self.embed_tokens_ner = nn.Embedding(50267, config.d_model, self.padding_idx)
-            self.embed_tokens_ner.weight.data[:50265, :] = self.embed_tokens.weight.data[:50265, :]
+            # self.embed_tokens_ner = nn.Embedding(50267, config.d_model, self.padding_idx)
+            # self.embed_tokens_ner.weight.data[:50265, :] = self.embed_tokens.weight.data[:50265, :]
+            self.embed_tokens_ner = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
+            self.embed_tokens_ner.weight.data = self.embed_tokens.weight.data.clone()
 
             self.embed_positions_ner = copy.deepcopy(self.embed_positions)
             
@@ -2092,3 +2094,5 @@ if __name__ == "__main__":
     print(prompt_mlp_clipcap)
     print(get_n_params(prompt_mlp_clipcap))
     prompt_mlp_clipcap(torch.randn(16, 768))
+
+
