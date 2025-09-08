@@ -14,8 +14,8 @@ import os
 
 MAX_PIXELS = 89478485
 RESAMPLING = Image.LANCZOS  
-detector = MTCNN(keep_all=True, device=device)
-facenet_model = InceptionResnetV1(pretrained="vggface2").eval().to(device)
+detector = MTCNN(keep_all=True, device="cuda")
+facenet_model = InceptionResnetV1(pretrained="vggface2").eval().to("cuda")
 # detector = MTCNN()
 # facenet_model = InceptionResnetV1(pretrained='vggface2').eval()
 def load_image(path_or_url):
