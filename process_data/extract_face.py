@@ -4,8 +4,9 @@ import requests
 from io import BytesIO
 import numpy as np
 import matplotlib.pyplot as plt
-from mtcnn import MTCNN
-from facenet_pytorch import InceptionResnetV1
+# from mtcnn import MTCNN
+# from facenet_pytorch import InceptionResnetV1
+from facenet_pytorch import MTCNN, InceptionResnetV1
 import torch
 from torchvision import transforms
 import json
@@ -13,9 +14,10 @@ import os
 
 MAX_PIXELS = 89478485
 RESAMPLING = Image.LANCZOS  
-
-detector = MTCNN()
-facenet_model = InceptionResnetV1(pretrained='vggface2').eval()
+detector = MTCNN(keep_all=True, device=device)
+facenet_model = InceptionResnetV1(pretrained="vggface2").eval().to(device)
+# detector = MTCNN()
+# facenet_model = InceptionResnetV1(pretrained='vggface2').eval()
 def load_image(path_or_url):
     try:
         # Lưu lại giá trị giới hạn ban đầu

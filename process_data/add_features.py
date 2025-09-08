@@ -237,9 +237,10 @@ label_mapping = {
 
 # Initialize vncorenlp
 # vncore = py_vncorenlp.VnCoreNLP(annotators=["wseg", "pos", "ner"], save_dir="/data2/npl/ICEK/VnCoreNLP")
+py_vncorenlp.download_model(save_dir="/data2/npl/ICEK/VnCoreNLP")
 vncore = py_vncorenlp.VnCoreNLP(
     annotators=["wseg", "pos", "ner", "parse"],
-    save_dir=vncorenlp_path,
+    save_dir="/data2/npl/ICEK/VnCoreNLP",
     max_heap_size='-Xmx10g'
 )
 
@@ -460,9 +461,12 @@ def process_dataset(input_json_path, output_json_path, vncore):
     print(f"Data processed and saved to {output_json_path}")
 
 if __name__ == "__main__":
-    input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/val.json"
-    output_json = r"/data2/npl/ICEK/vacnic/data/val.json"
+    input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/demo10.json"
+    output_json = r"/data2/npl/ICEK/vacnic/data/demo10.json"
     process_dataset(input_json, output_json, vncore)
+    # input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/val.json"
+    # output_json = r"/data2/npl/ICEK/vacnic/data/val.json"
+    # process_dataset(input_json, output_json, vncore)
     # input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/test.json"
     # output_json = r"/data2/npl/ICEK/vacnic/data/test.json"
     # process_dataset(input_json, output_json, vncore)
