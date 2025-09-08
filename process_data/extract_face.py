@@ -65,10 +65,10 @@ def extract_faces(image_path, image_url):
             print(f"Ảnh mạng cũng lỗi rồi bạn eiiiii")
             return []
 
-    pixels = np.asarray(image)
-    results = detector.detect_faces(pixels)
+    # pixels = np.asarray(image)
+    results,_ = detector(image, return_prob=True)
     faces = []
-    if not results:
+    if results is None or len(faces) == 0:
         print("Không phát hiện khuôn mặt nào trong ảnh.")
         return faces
     for i, result in enumerate(results):
