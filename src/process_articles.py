@@ -1,16 +1,22 @@
 import os 
-import stanza
 from tqdm import tqdm 
 import json 
 import re 
+import py_vncorenlp
+from typing import List, Dict, Tuple
 
+# LABEL_MAP = {
+#     "PER": "PER", "PERSON": "PER",
+#     "ORG": "ORG", "ORGANIZATION": "ORG", "NORP": "ORG",
+#     "LOC": "LOC", "GPE": "LOC", "LOCATION": "LOC"
+
+# }
 LABEL_MAP = {
-    "PER": "PER", "PERSON": "PER",
-    "ORG": "ORG", "ORGANIZATION": "ORG", "NORP": "ORG",
-    "LOC": "LOC", "GPE": "LOC", "LOCATION": "LOC"
-
+    "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
+    "ORG": "ORGANIZATION", "B-ORG": "ORGANIZATION", "I-ORG": "ORGANIZATION",
+    "LOC": "LOCATION", "B-LOC": "LOCATION", "I-LOC": "LOCATION",
+    "GPE": "GPE", "B-GPE": "GPE", "I-GPE": "GPE",
 }
-
 
 def is_abbreviation(entity):
     """
@@ -19,28 +25,67 @@ def is_abbreviation(entity):
     """
     pattern = r'\b([A-Z]\.)+([A-Z][a-z]*)?\b'
     return re.match(pattern, entity) is not None
-def get_entities(doc):
+
+def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
+    """
+    Given the original text and a list of token strings in order,
+    return (start_char, end_char) for each token by scanning forward.
+
+    Robust to repeated tokens and punctuation because we always search from the moving cursor.
+    """
+    offsets = []
+    cursor = 0
+    for tok in tokens:
+        # Try to find the next occurrence of token from the current cursor
+        # Escape regex special chars just in case
+        pattern = re.escape(tok)
+        m = re.search(pattern, text[cursor:])
+        if m:
+            start = cursor + m.start()
+            end = cursor + m.end()
+        else:
+            # Fallbacks in rare alignment edge cases
+            # 1) Skip any whitespace at cursor and try direct slice
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            if text[cursor:cursor+len(tok)] == tok:
+                start = cursor
+                end = cursor + len(tok)
+            else:
+                # 2) Last resort: global find from cursor
+                idx = text.find(tok, cursor)
+                if idx == -1:
+                    raise ValueError(f"Cannot align token '{tok}' near index {cursor}")
+                start = idx
+                end = idx + len(tok)
+        offsets.append((start, end))
+        cursor = end
+    return offsets
+
+def get_entities(doc, article_full):
     entities = []
-    for sent in doc.sentences:
-        for ent in sent.ents:
-            ent_text = ent.text.strip()
-
-            # Bỏ thực thể viết tắt không mong muốn
-            if '.' in ent_text and not is_abbreviation(ent_text):
-                continue
-
-            mapped = LABEL_MAP.get(ent.type)
-            if mapped is None:            # nhãn ngoài PER/ORG/LOC → bỏ
-                continue
-
-            entities.append({
-                "text": ent_text,
-                "label": mapped,          # luôn là PER / ORG / LOC
-                "position": [ent.start_char, ent.end_char],
-            })
+    tokens = []
+    for subsent in doc:
+        for word in doc[subsent]:
+            ent_type = LABEL_MAP.get(word.get('nerLabel', ''), '')
+            ent_text = word.get('wordForm', '').strip()
+            if ent_type and ent_text:
+                ent_text = (' '.join(ent_text.split('_')).strip("•"))
+                tokens.append({
+                    "text": ent_text,
+                    "label": ent_type,          # luôn là PERON / ORGANIZATION / LOCATION
+                })
+    token_texts = [t['text'] for t in tokens]
+    token_offsets = align_tokens_to_text(article_full, token_texts)
+    for t, (s, e) in zip(tokens, token_offsets):
+        entities.append({
+            'text': t['text'],
+            'label': t['label'],  
+            "position":[s,e]
+        })
     return entities
 
-def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list):
+def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
     # make dict for unique ners with format as: {"Bush": PERSON_1}
     person_count = 1 # total count of PERSON type entities
     org_count = 1 # total count of ORG type entities
@@ -59,19 +104,19 @@ def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list):
             new_ner_type_list.append(ner_type)
             person_count += 1
         elif ent_type_list[i] in ["ORGANIZATION", "ORG", "NORP"]:
-            ner_type = "<ORG>_" + f"{org_count}"
+            ner_type = "<ORGANIZATION>_" + f"{org_count}"
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             org_count += 1
         elif ent_type_list[i] in ["GPE", "LOC","LOCATION"]:
-            ner_type = "<LOC>_" + f"{gpe_count}"
+            ner_type = "<LOCATION>_" + f"{gpe_count}"
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             gpe_count += 1
         
     entities_type = {} # dict with ner labels replaced by "PERSON_i", "ORG_j", "GPE_k"
 
-    entities = get_entities(processed_doc)
+    entities = get_entities(processed_doc, article_full)
 
     for i, ent in enumerate(entities):
         entities_type[i] = ent
@@ -98,35 +143,37 @@ def save_full_processed_articles_all_ent_by_count(
     ngược lại sẽ mở file <article_full_text_dir>/<hash_id>.txt (tuỳ chọn).
     """
     os.makedirs(out_dir, exist_ok=True)
-
+    # i = 0
     for key, meta in tqdm(data_dict.items(), desc="make NER masks"):
+        # if(i%100==0):
+        #     print(f"[PROCESSING] DONE {i}")
         if meta.get("sents_byclip"):              
             article_full = meta["sents_byclip"].replace('\n\n',' ')
         else:
             raise ValueError(f"{key} thiếu 'sents_byclip'; "
                              "hãy thêm hoặc truyền đường dẫn txt.")
+        sentences = re.split(r'(?<=[\.!?])\s+', article_full.strip())
+        if not sentences:
+            return {}
+        processed_text=[]
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            try:
+                annotated_text = nlp.annotate_text(sent)
+                processed_text.append(annotated_text)
+            except Exception as e:
+                print(f"Lỗi khi annotating text: {e}")
         
-        # article_full = article_full.replace('_',' ')
-        # article_full = article_full.replace("\n\n",'')
-        # paragraphs = article_full.split(',')
-        
-        # all_entities = []
-        # for para in paragraphs:
-        #     if para.strip() == "":
-        #         continue
-        #     ner_results = nlp(para)
-        #     entities = get_entities(ner_results)
-        #     all_entities.extend(entities)
-
-        processed_doc = nlp(article_full)
-        entities      = get_entities(processed_doc)  
+        entities      = get_entities(processed_text, article_full)  
 
         ent_list      = [e["text"]   for e in entities]
         ent_type_list = [e["label"]  for e in entities]
 
         # 3. Tạo mapping <PERSON>_1 … và id list
         entities_type, start_pos_list, *_ = \
-            make_ner_dict_by_type(processed_doc, ent_list, ent_type_list)
+            make_ner_dict_by_type(processed_text, ent_list, ent_type_list, article_full)
 
         ent_len_list = [len(tokenizer(t)["input_ids"]) - 2 for t in ent_list]
 
@@ -138,7 +185,8 @@ def save_full_processed_articles_all_ent_by_count(
         if not os.path.isfile(out_path):
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(article_ids_ner, f, ensure_ascii=False)
-                print("đã lưu nha bro")
+                # print("đã lưu nha bro")
+        # i+=1
 
 
 def make_new_article_ids_all_ent(article_full, ent_list, entities_type, tokenizer):
@@ -181,13 +229,13 @@ def find_first_sublist(seq, sublist, start=0):
 
 
 def get_caption_with_ent_type(nlp, caption, tokenizer):
-    processed_doc = nlp(caption)
-    entities = get_entities(processed_doc)
+    processed_doc = nlp.annotate_text(caption)
+    entities = get_entities(processed_doc, caption)
         
     ent_list = [ entities[i]["text"] for i in range(len(entities)) ]
     ent_type_list = [ entities[i]["label"] for i in range(len(entities)) ]
         
-    entities_type, start_pos_list, _, _, _ = make_ner_dict_by_type(processed_doc, ent_list, ent_type_list)
+    entities_type, start_pos_list, _, _, _ = make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, caption)
 
     new_caption, caption_ids_ner = make_new_caption_ids_all_ent(caption, ent_list, entities_type, tokenizer)
     return new_caption, caption_ids_ner
@@ -256,16 +304,43 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 if __name__ == "__main__":
 
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained("/data/npl/ICEK/License-Plate-Detection-Pipeline-with-Experiment-Tracking/assets/bartpho-syllable")
-    tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORG>", "<LOC>"]})
+    tokenizer = AutoTokenizer.from_pretrained("/data2/npl/ICEK/vacnic/bartpho-syllable-base")
+    tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORGANIZATION>", "<LOCATION>"]})
    
     PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
-    nlp = stanza.Pipeline(lang='vi', processors='tokenize,ner')
 
-    with open('/data/npl/ICEK/DATASET/content/vacnic/final/train_vacnic_final_1.json','r',encoding='utf-8') as f:
+    py_vncorenlp.download_model(save_dir="/data2/npl/ICEK/VnCoreNLP")
+    nlp = py_vncorenlp.VnCoreNLP(
+        annotators=["wseg", "pos", "ner"],
+        save_dir="/data2/npl/ICEK/VnCoreNLP",
+        max_heap_size='-Xmx10g'
+    )
+    # nlp = stanza.Pipeline(lang='vi', processors='tokenize,ner')
+
+    with open('/data2/npl/ICEK/vacnic/data/test.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/test"
+    save_full_processed_articles_all_ent_by_count(
+            data_dict=data_dict,
+            out_dir=OUT_DIR,
+            tokenizer=tokenizer,
+            nlp=nlp)
 
-    OUT_DIR = "/data/npl/ICEK/DATASET/content/vacnic/article_all_ent_by_count_dir/train"
+    with open('/data2/npl/ICEK/vacnic/data/val.json','r',encoding='utf-8') as f:
+        data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/val"
+    save_full_processed_articles_all_ent_by_count(
+            data_dict=data_dict,
+            out_dir=OUT_DIR,
+            tokenizer=tokenizer,
+            nlp=nlp)
+
+    with open('/data2/npl/ICEK/vacnic/data/train.json','r',encoding='utf-8') as f:
+        data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/train"
     save_full_processed_articles_all_ent_by_count(
             data_dict=data_dict,
             out_dir=OUT_DIR,

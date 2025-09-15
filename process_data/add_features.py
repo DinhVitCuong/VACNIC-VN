@@ -7,7 +7,11 @@ from extract_face import extract_faces, get_face_embedding
 from extract_object import detect_objects, extract_object_embedding
 from tqdm import tqdm
 import py_vncorenlp
+import logging  # Added for better error handling
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 print('Start process')
 
 # Initialize vncorenlp
@@ -105,115 +109,139 @@ def find_name_positions(caption, names):
 
 def process_dataset(input_json_path, output_json_path, vncore):
     """
-    Read data from input_json_path, process it, and save to output_json_path.
+    Read data from input_json_path, process only new entries, and update output_json_path.
     """
+    # Load existing output JSON if it exists
+    new_data = {}
+    if os.path.exists(output_json_path):
+        try:
+            with open(output_json_path, 'r', encoding='utf-8') as f:
+                new_data = json.load(f)
+            logger.info(f"Loaded {len(new_data)} existing entries from {output_json_path}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Error loading existing JSON {output_json_path}: {e}")
+            new_data = {}
+
+    # Load input JSON
     with open(input_json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    new_data = {}
-
+    processed_count = 0
     for hash_id, content in tqdm(data.items(), desc="Processing dataset"):
-        new_entry = {}
-        img_id = content["image_path"].split("images/")[-1]
-        image_path = f"/data2/npl/ICEK/Wikipedia/images_resized/{img_id}"
-        image_url = ""
+        # Skip if already processed
+        if hash_id in new_data:
+            continue
 
-        # Extract faces
-        faces = extract_faces(image_path, image_url)
-        faces_embbed = []
-        if faces:
-            for face in faces:
-                face_emb = get_face_embedding(face)
-                faces_embbed.append(face_emb)
-            face_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/faces", f"{hash_id}.npy")
-            np.save(face_emb_path, faces_embbed)
-            new_entry["face_emb_dir"] = face_emb_path
-        else:
-            new_entry["face_emb_dir"] = []
+        try:
+            new_entry = {}
+            img_id = content["image_path"].split("images/")[-1]
+            image_path = f"/data2/npl/ICEK/Wikipedia/images_resized/{img_id}"
+            image_url = ""
 
-        # Extract objects
-        objects, _ = detect_objects(image_path, image_url)
-        objects_embbed = []
-        if objects:
-            for obj in objects:
-                object_emb = extract_object_embedding(image_path, image_url, obj)
-                objects_embbed.append(object_emb)
-            object_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/objects", f"{hash_id}.npy")
-            np.save(object_emb_path, objects_embbed)
-            new_entry["obj_emb_dir"] = object_emb_path
-        else:
-            new_entry["obj_emb_dir"] = []
+            # Extract faces
+            faces = extract_faces(image_path, image_url)
+            faces_embbed = []
+            if faces:
+                for face in faces:
+                    face_emb = get_face_embedding(face)
+                    faces_embbed.append(face_emb)
+                face_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/faces", f"{hash_id}.npy")
+                np.save(face_emb_path, faces_embbed)
+                new_entry["face_emb_dir"] = face_emb_path
+            else:
+                new_entry["face_emb_dir"] = []
 
-        caption = content["caption"]
-        list_sents_byclip = content.get("paragraphs", [])
-        sents_byclip = ' '.join(list_sents_byclip)
+            # Extract objects
+            objects, _ = detect_objects(image_path, image_url)
+            objects_embbed = []
+            if objects:
+                for obj in objects:
+                    object_emb = extract_object_embedding(image_path, image_url, obj)
+                    objects_embbed.append(object_emb)
+                object_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/objects", f"{hash_id}.npy")
+                np.save(object_emb_path, objects_embbed)
+                new_entry["obj_emb_dir"] = object_emb_path
+            else:
+                new_entry["obj_emb_dir"] = []
 
-        # Extract entities from context
-        context_entities = extract_entities(sents_byclip, vncore)
-        # print(f"[DEBUG] context_entities: {context_entities}")
-        names_art = context_entities.get("PERSON", [])
-        org_norp_art = context_entities.get("ORGANIZATION", []) + context_entities.get("NORP", [])
-        gpe_loc_art = context_entities.get("GPE", []) + context_entities.get("LOCATION", [])
+            caption = content["caption"]
+            list_sents_byclip = content.get("paragraphs", [])
+            sents_byclip = ' '.join(list_sents_byclip)
 
-        # Extract entities from captions
-        captions_text = caption
-        caption_entities = extract_entities(captions_text, vncore)
-        names_caption = caption_entities.get("PERSON", [])
-        org_norp_caption = caption_entities.get("ORGANIZATION", []) + caption_entities.get("NORP", [])
-        gpe_loc_caption = caption_entities.get("GPE", []) + caption_entities.get("LOCATION", [])
+            # Extract entities from context
+            context_entities = extract_entities(sents_byclip, vncore)
+            names_art = list(context_entities.get("PERSON", []))
+            org_norp_art = list(context_entities.get("ORGANIZATION", [])) + list(context_entities.get("NORP", []))
+            gpe_loc_art = list(context_entities.get("GPE", [])) + list(context_entities.get("LOCATION", []))
 
-        # Add ner_cap field
-        ner_cap = []
-        for ent_type, entities in caption_entities.items():
-            ner_cap.extend(entities)
-        new_entry["ner_cap"] = list(set(ner_cap))
+            # Extract entities from captions
+            captions_text = caption
+            caption_entities = extract_entities(captions_text, vncore)
+            names_caption = list(caption_entities.get("PERSON", []))
+            org_norp_caption = list(caption_entities.get("ORGANIZATION", [])) + list(caption_entities.get("NORP", []))
+            gpe_loc_caption = list(caption_entities.get("GPE", [])) + list(caption_entities.get("LOCATION", []))
 
-        # Create named_entities field
-        named_entites = []
-        for ent_type, entities in context_entities.items():
-            named_entites.extend(entities)
-        for ent_type, entities in caption_entities.items():
-            named_entites.extend(entities)
-        new_entry["named_entites"] = list(set(named_entites))
+            # Add ner_cap field
+            ner_cap = []
+            for ent_type, entities in caption_entities.items():
+                ner_cap.extend(entities)
+            new_entry["ner_cap"] = list(set(ner_cap))
 
-        # Add unique entity fields
-        new_entry["names_art"] = list(set(names_art))
-        new_entry["org_norp_art"] = list(set(org_norp_art))
-        new_entry["gpe_loc_art"] = list(set(gpe_loc_art))
-        new_entry["org_norp_cap"] = list(set(org_norp_caption))
-        new_entry["gpe_loc_cap"] = list(set(gpe_loc_caption))
+            # Create named_entities field
+            named_entites = []
+            for ent_type, entities in context_entities.items():
+                named_entites.extend(entities)
+            for ent_type, entities in caption_entities.items():
+                named_entites.extend(entities)
+            new_entry["named_entites"] = list(set(named_entites))
 
-        # Combine context and caption entities
-        new_entry["names"] = list(set(names_art + names_caption))
-        new_entry["org_norp"] = list(set(org_norp_art + org_norp_caption))
-        new_entry["gpe_loc"] = list(set(gpe_loc_art + gpe_loc_caption))
+            # Add unique entity fields
+            new_entry["names_art"] = list(set(names_art))
+            new_entry["org_norp_art"] = list(set(org_norp_art))
+            new_entry["gpe_loc_art"] = list(set(gpe_loc_art))
+            new_entry["org_norp_cap"] = list(set(org_norp_caption))
+            new_entry["gpe_loc_cap"] = list(set(gpe_loc_caption))
 
-        # Add existing fields
-        new_entry["image_path"] = image_path
-        new_entry["caption"] = caption
-        name_pos_cap = find_name_positions(caption, names_caption)
-        if not name_pos_cap:
-            name_pos_cap = []
-        new_entry["name_pos_cap"] = name_pos_cap
-        new_entry["sents_byclip"] = "\n\n".join(list_sents_byclip)
+            # Combine context and caption entities
+            new_entry["names"] = list(set(names_art + names_caption))
+            new_entry["org_norp"] = list(set(org_norp_art + org_norp_caption))
+            new_entry["gpe_loc"] = list(set(gpe_loc_art + gpe_loc_caption))
 
-        new_data[hash_id] = new_entry
+            # Add existing fields
+            new_entry["image_path"] = image_path
+            new_entry["caption"] = caption
+            name_pos_cap = find_name_positions(caption, names_caption)
+            if not name_pos_cap:
+                name_pos_cap = []
+            new_entry["name_pos_cap"] = name_pos_cap
+            new_entry["sents_byclip"] = "\n\n".join(list_sents_byclip)
 
+            new_data[hash_id] = new_entry
+            processed_count += 1
+
+            # Optional: Periodic save every 100 entries for crash recovery
+            if processed_count % 100 == 0:
+                with open(output_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(new_data, f, ensure_ascii=False, indent=4)
+                logger.info(f"Saved {processed_count} new entries at {hash_id}")
+
+        except Exception as e:
+            logger.error(f"Error processing {hash_id}: {e}")
+
+    # Final save
+    if processed_count > 0:  # Only write if new data was added
         with open(output_json_path, 'w', encoding='utf-8') as f:
             json.dump(new_data, f, ensure_ascii=False, indent=4)
-
-    print(f"Data processed and saved to {output_json_path}")
+        logger.info(f"Data processed and saved to {output_json_path}, added {processed_count} new entries")
+    else:
+        logger.info(f"No new entries to process for {output_json_path}")
 
 if __name__ == "__main__":
-    input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/demo10.json"
-    output_json = r"/data2/npl/ICEK/vacnic/data/demo10.json"
-    process_dataset(input_json, output_json, vncore)
-    # input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/val.json"
-    # output_json = r"/data2/npl/ICEK/vacnic/data/val.json"
-    # process_dataset(input_json, output_json, vncore)
-    # input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/test.json"
-    # output_json = r"/data2/npl/ICEK/vacnic/data/test.json"
-    # process_dataset(input_json, output_json, vncore)
-    # input_json = r"/data2/npl/ICEK/Wikipedia/content/ver4/train.json"
-    # output_json = r"/data2/npl/ICEK/vacnic/data/train.json"
-    # process_dataset(input_json, output_json, vncore)
+    datasets = [
+        (r"/data2/npl/ICEK/Wikipedia/content/ver4/demo10.json", r"/data2/npl/ICEK/vacnic/data/demo10.json"),
+        (r"/data2/npl/ICEK/Wikipedia/content/ver4/val.json", r"/data2/npl/ICEK/vacnic/data/val.json"),
+        (r"/data2/npl/ICEK/Wikipedia/content/ver4/test.json", r"/data2/npl/ICEK/vacnic/data/test.json"),
+        (r"/data2/npl/ICEK/Wikipedia/content/ver4/train.json", r"/data2/npl/ICEK/vacnic/data/train.json"),
+    ]
+    for input_json, output_json in datasets:
+        process_dataset(input_json, output_json, vncore)

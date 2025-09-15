@@ -8,13 +8,19 @@ parser.add_argument("--seed", type=str, default="684331")
 parser.add_argument("--gpu_ids", type=str, default="1")
 parser.add_argument("--num_workers", type=int, default=4)
 
-parser.add_argument("--train_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_train.json')
-parser.add_argument("--val_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_val.json')
-parser.add_argument("--test_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_test.json')
+# OLD DATASET
+# parser.add_argument("--train_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_train.json')
+# parser.add_argument("--val_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_val.json')
+# parser.add_argument("--test_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_test.json')
+
+# NEW DATASET
+parser.add_argument("--train_json", type=str, default='/data2/npl/ICEK/vacnic/data/mini_train.json')
+parser.add_argument("--val_json", type=str, default='/data2/npl/ICEK/vacnic/data/mini_val.json')
+parser.add_argument("--test_json", type=str, default='/data2/npl/ICEK/vacnic/data/mini_test.json')
 
 parser.add_argument("--article_max_length", type=int, default=512)
 parser.add_argument("--caption_max_length", type=int, default=100)
-parser.add_argument("--plm_type", type=str, default="/data2/npl/ICEK/License-Plate-Detection-Pipeline-with-Experiment-Tracking/assets/bartpho-syllable")
+parser.add_argument("--plm_type", type=str, default="/data2/npl/ICEK/vacnic/bartpho-syllable-base")
 parser.add_argument("--clip_type", type=str, default="ViT-B/32")
 parser.add_argument("--ent_start_token", type=str, default="no")
 parser.add_argument("--ent_end_token", type=str, default="no")
@@ -35,8 +41,8 @@ parser.add_argument("--lr_clip", type=float, default = 5e-6)
 parser.add_argument("--weight_decay", type=float, default = 1e-5)
 parser.add_argument("--clip_norm", type=float, default = 0.1)
 
-parser.add_argument("--base_dir", type=str, default= "/data2/npl/ICEK/Wikipedia/content/vacnic")
-parser.add_argument("--out_dir", type=str, default= "/data2/npl/ICEK/Image-captioning-for-Vietnamese/output4")
+parser.add_argument("--base_dir", type=str, default= "/data2/npl/ICEK/vacnic/data/embeddings")
+parser.add_argument("--out_dir", type=str, default= "/data2/npl/ICEK/vacnic/output/v1")
 
 parser.add_argument("--mapping_loss_type", type=str, default= "contrastive")
 

@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 import json
 from torchvision import transforms
 import copy
-import stanza
+import py_vncorenlp
 import re
 MAX_PIXELS = 89478485
 RESAMPLING = Image.LANCZOS  
@@ -45,9 +45,7 @@ def safe_open_resize(path, max_px=16_000_000):              # ≈4K × 4K
             img   = img.resize((new_w, new_h), Image.BICUBIC)
         return img
     except (Image.DecompressionBombError, UnidentifiedImageError, OSError):
-        return None              # caller tự quyết định bỏ qua hay thay thế
-# 1. Khởi tạo NER
-# nlp = stanza.Pipeline(lang='vi', processors='tokenize,ner')
+        return None              # caller tự quyết định bỏ qua hay thay 
 
 
 def is_abbreviation(entity):
@@ -58,28 +56,65 @@ def is_abbreviation(entity):
     pattern = r'\b([A-Z]\.)+([A-Z][a-z]*)?\b'
     return re.match(pattern, entity) is not None
 
-def get_entities(doc):
+def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
     """
-    Trích xuất các thực thể từ kết quả NER của Stanza.
+    Given the original text and a list of token strings in order,
+    return (start_char, end_char) for each token by scanning forward.
 
-    Tham số:
-        doc: đối tượng Document của Stanza sau khi chạy pipeline NER.
-    
-    Trả về:
-        - Danh sách các dictionary chứa 'text', 'label', và 'position'.
+    Robust to repeated tokens and punctuation because we always search from the moving cursor.
     """
+    offsets = []
+    cursor = 0
+    for tok in tokens:
+        # Try to find the next occurrence of token from the current cursor
+        # Escape regex special chars just in case
+        pattern = re.escape(tok)
+        m = re.search(pattern, text[cursor:])
+        if m:
+            start = cursor + m.start()
+            end = cursor + m.end()
+        else:
+            # Fallbacks in rare alignment edge cases
+            # 1) Skip any whitespace at cursor and try direct slice
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            if text[cursor:cursor+len(tok)] == tok:
+                start = cursor
+                end = cursor + len(tok)
+            else:
+                # 2) Last resort: global find from cursor
+                idx = text.find(tok, cursor)
+                if idx == -1:
+                    raise ValueError(f"Cannot align token '{tok}' near index {cursor}")
+                start = idx
+                end = idx + len(tok)
+        offsets.append((start, end))
+        cursor = end
+    return offsets
+
+def get_entities(doc, article_full):
     entities = []
-    for sentence in doc.sentences:
-        for ent in sentence.ents:
-            ent_text = ent.text.strip()
-            if '.' in ent_text and not is_abbreviation(ent_text):
-                continue
-            entities.append({
-                'text': ent_text,
-                'label': ent.type,
-                'position': [ent.start_char, ent.end_char]
-            })
+    tokens = []
+    for subsent in doc:
+        for word in doc[subsent]:
+            ent_type = LABEL_MAP.get(word.get('nerLabel', ''), '')
+            ent_text = word.get('wordForm', '').strip()
+            if ent_type and ent_text:
+                ent_text = (' '.join(ent_text.split('_')).strip("•"))
+                tokens.append({
+                    "text": ent_text,
+                    "label": ent_type,          # luôn là PERON / ORGANIZATION / LOCATION
+                })
+    token_texts = [t['text'] for t in tokens]
+    token_offsets = align_tokens_to_text(article_full, token_texts)
+    for t, (s, e) in zip(tokens, token_offsets):
+        entities.append({
+            'text': t['text'],
+            'label': t['label'],  
+            "position":[s,e]
+        })
     return entities
+
 
 
 def get_max_len_list(seq_list_of_list):
@@ -890,7 +925,7 @@ def preprocess_article(article):
 
 
 
-def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list):
+def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
     # make dict for unique ners with format as: {"Bush": PERSON_1}
     person_count = 1 # total count of PERSON type entities
     org_count = 1 # total count of ORG type entities
@@ -921,7 +956,7 @@ def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list):
         
     entities_type = {} # dict with ner labels replaced by "PERSON_i", "ORG_j", "GPE_k"
 
-    entities = get_entities(processed_doc)
+    entities = get_entities(processed_doc, article_full)
 
     for i, ent in enumerate(entities):
         entities_type[i] = ent
@@ -1024,8 +1059,8 @@ def find_first_sublist(seq, sublist, start=0):
 
 
 def get_caption_with_ent_type(nlp, caption, tokenizer):
-    processed_doc = nlp(caption)
-    entities = get_entities(processed_doc)
+    processed_doc = nlp.annotate_text(caption)
+    entities = get_entities(processed_doc, caption)
         
     ent_list = [ entities[i]["text"] for i in range(len(entities)) ]
     ent_type_list = [ entities[i]["label"] for i in range(len(entities)) ]
@@ -1070,7 +1105,13 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 
 
 if __name__ == "__main__":
-    nlp = stanza.Pipeline(lang='vi', processors='tokenize,ner')
+    
+    py_vncorenlp.download_model(save_dir="/data2/npl/ICEK/VnCoreNLP")
+    nlp = py_vncorenlp.VnCoreNLP(
+        annotators=["wseg", "pos", "ner"],
+        save_dir="/data2/npl/ICEK/VnCoreNLP",
+        max_heap_size='-Xmx10g'
+    )
     from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
     tokenizer = AutoTokenizer.from_pretrained("/data/npl/ICEK/License-Plate-Detection-Pipeline-with-Experiment-Tracking/assets/bartpho-syllable")
