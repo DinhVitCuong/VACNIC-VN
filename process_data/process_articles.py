@@ -221,6 +221,7 @@ def save_full_processed_articles_all_ent_by_count(
                 continue
             try:
                 annotated_text = nlp.annotate_text(sent)
+                print(f"[DEBUG] annotated_text: {annotated_text}")
                 processed_text.append(annotated_text)
             except Exception as e:
                 print(f"Lỗi khi annotating text: {e}")
@@ -363,47 +364,56 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 if __name__ == "__main__":
 
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained("/data2/npl/ICEK/vacnic/bartpho-syllable-base")
+    tokenizer = AutoTokenizer.from_pretrained(r"Z:\DATN\model\vacnic_model\bartpho-syllable")
     tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORGANIZATION>", "<LOCATION>"]})
    
     PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
 
-    py_vncorenlp.download_model(save_dir="/data2/npl/ICEK/VnCoreNLP")
+    py_vncorenlp.download_model(save_dir=r"Z:\DATN\model\vacnic_model\VnCoreNLP")
     nlp = py_vncorenlp.VnCoreNLP(
         annotators=["wseg", "pos", "ner"],
-        save_dir="/data2/npl/ICEK/VnCoreNLP",
+        save_dir="Z:\DATN\model\vacnic_model\VnCoreNLP",
         max_heap_size='-Xmx10g'
     )
-    # nlp = stanza.Pipeline(lang='vi', processors='tokenize,ner')
 
-    with open('/data2/npl/ICEK/vacnic/data/test.json','r',encoding='utf-8') as f:
+    with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/test"
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\test"
     save_full_processed_articles_all_ent_by_count(
             data_dict=data_dict,
             out_dir=OUT_DIR,
             tokenizer=tokenizer,
             nlp=nlp)
 
-    with open('/data2/npl/ICEK/vacnic/data/val.json','r',encoding='utf-8') as f:
-        data_dict = json.load(f)
-    print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/val"
-    save_full_processed_articles_all_ent_by_count(
-            data_dict=data_dict,
-            out_dir=OUT_DIR,
-            tokenizer=tokenizer,
-            nlp=nlp)
+    # with open('/data2/npl/ICEK/vacnic/data/test.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # print("[DEBUG] DATA LOADED, PROCESSING")
+    # OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/test"
+    # save_full_processed_articles_all_ent_by_count(
+    #         data_dict=data_dict,
+    #         out_dir=OUT_DIR,
+    #         tokenizer=tokenizer,
+    #         nlp=nlp)
 
-    with open('/data2/npl/ICEK/vacnic/data/train.json','r',encoding='utf-8') as f:
-        data_dict = json.load(f)
-    print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/train"
-    save_full_processed_articles_all_ent_by_count(
-            data_dict=data_dict,
-            out_dir=OUT_DIR,
-            tokenizer=tokenizer,
-            nlp=nlp)
+    # with open('/data2/npl/ICEK/vacnic/data/val.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # print("[DEBUG] DATA LOADED, PROCESSING")
+    # OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/val"
+    # save_full_processed_articles_all_ent_by_count(
+    #         data_dict=data_dict,
+    #         out_dir=OUT_DIR,
+    #         tokenizer=tokenizer,
+    #         nlp=nlp)
+
+    # with open('/data2/npl/ICEK/vacnic/data/train.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # print("[DEBUG] DATA LOADED, PROCESSING")
+    # OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/train"
+    # save_full_processed_articles_all_ent_by_count(
+    #         data_dict=data_dict,
+    #         out_dir=OUT_DIR,
+    #         tokenizer=tokenizer,
+    #         nlp=nlp)
 
 

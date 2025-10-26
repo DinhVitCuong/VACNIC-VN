@@ -1,0 +1,5 @@
+3.11
+
+torch 2.5.1 for CUDA 12.1
+
+then pip install transformers py_vncorenlp
