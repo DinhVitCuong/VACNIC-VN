@@ -536,8 +536,8 @@ if __name__ == "__main__":
             AutoTokenizer, PreTrainedTokenizerFast,
             BartForConditionalGeneration, get_linear_schedule_with_warmup)
     from prepare_dataset import (
-            GoodNewsDictDatasetEntityTypeFixLenEntPos,
-            collate_fn_goodnews_entity_type)
+            ViWikiDictDatasetEntityTypeFixLenEntPos,
+            collate_fn_viwiki_entity_type)
     from author_model import BartForMultiModalGeneration
     # --------------------------------------
     torch.autograd.set_detect_anomaly(True)
@@ -627,7 +627,7 @@ if __name__ == "__main__":
     def build_dataset(json_path, split):
         with open(json_path, 'r', encoding='utf-8') as f:
             data_dict = json.load(f)
-        return GoodNewsDictDatasetEntityTypeFixLenEntPos(
+        return ViWikiDictDatasetEntityTypeFixLenEntPos(
                     data_dict,
                     args.base_dir,
                     tokenizer,               
@@ -638,7 +638,7 @@ if __name__ == "__main__":
                     max_ner_type_len=args.max_ner_type_len,
                     max_ner_type_len_gt=args.max_ner_type_len_gt,
                     retrieved_sent=True)
-    collate = partial(collate_fn_goodnews_entity_type, noname_id=noname_id,tokenizer=tokenizer)
+    collate = partial(collate_fn_viwiki_entity_type, noname_id=noname_id,tokenizer=tokenizer)
     train_data = build_dataset(args.train_json, "train")
     val_data   = build_dataset(args.val_json,   "dev")
     test_data  = build_dataset(args.test_json,  "test")  

@@ -1,5 +1,6 @@
 import os
 from re import I
+from charset_normalizer import detect
 import numpy as np
 from PIL import Image
 from torchvision.transforms import (CenterCrop, Compose, Normalize, Resize,
@@ -7,171 +8,119 @@ from torchvision.transforms import (CenterCrop, Compose, Normalize, Resize,
 from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset, DataLoader
+from transformers import BartTokenizer, BartModel
 import json
 from torchvision import transforms
 import copy
-import py_vncorenlp
-import unicodedata
-from bisect import bisect_left
-import re
-MAX_PIXELS = 89478485
-RESAMPLING = Image.LANCZOS  
-
-from PIL import Image, ImageFile, UnidentifiedImageError
-ImageFile.LOAD_TRUNCATED_IMAGES = True   # tránh lỗi ảnh hỏng
-
-def debug_loader(loader, n_batches=3):
-    for i,(batch) in enumerate(loader):
-        print(f"\nBatch {i}")
-        for k,v in batch.items():
-            if isinstance(v, torch.Tensor):
-                print(f"{k:16s}", v.shape,
-                      "finite=", torch.isfinite(v).all().item(),
-                      "min=", v.min().item(), "max=", v.max().item())
-        if i+1 == n_batches: break
+import unidecode
 
 
-def safe_open_resize(path, max_px=16_000_000):              # ≈4K × 4K  
-    """
-    - path    : đường dẫn file ảnh
-    - max_px  : giới hạn W×H tối đa. Vượt ngưỡng → resize.
-    Trả về:   đối tượng PIL.Image  (RGB)
-              hoặc None nếu không đọc được.
-    """
-    try:
-        img = Image.open(path).convert("RGB")
-        if img.size[0] * img.size[1] > max_px:
-            ratio = (max_px / (img.size[0] * img.size[1])) ** 0.5
-            new_w = int(img.size[0] * ratio)
-            new_h = int(img.size[1] * ratio)
-            img   = img.resize((new_w, new_h), Image.BICUBIC)
-        return img
-    except (Image.DecompressionBombError, UnidentifiedImageError, OSError):
-        return None              # caller tự quyết định bỏ qua hay thay 
+def collate_fn_viwiki_entity_type(batch):
+    # print(len(batch))
+    article_list = []
+    article_id_list = []
+    article_ner_mask_id_list = []
 
+    caption_list = []
+    caption_id_list = []
+    caption_id_clip_list = []
+    names_art_list = []
+    names_art_ids_list = []
+    org_norp_gpe_loc_art_list = []
+    org_norp_gpe_loc_art_ids_list = []
+    names_list = []
+    names_ids_list = []
+    org_norp_gpe_loc_list = []
+    org_norp_gpe_loc_ids_list = []
 
-def is_abbreviation(entity):
-    """
-    Kiểm tra xem một chuỗi có phải viết tắt theo dạng A.B. hay không.
-    Pattern: A. B. (có thể thêm tên tiếp theo sau)
-    """
-    pattern = r'\b([A-Z]\.)+([A-Z][a-z]*)?\b'
-    return re.match(pattern, entity) is not None
+    names_ids_flatten_list = []
+    org_norp_gpe_loc_ids_flatten_list = []
 
-def _vn_fold_char(ch: str) -> str:
-    """Fold a single character: remove VN diacritics, map NBSP→space, đ/Đ→d/D."""
-    if ch == '\u00A0':  # NBSP
-        return ' '
-    if ch == 'đ':
-        return 'd'
-    if ch == 'Đ':
-        return 'D'
-    # Decompose & drop combining marks (tone/diacritics)
-    decomp = unicodedata.normalize('NFD', ch)
-    base = ''.join(c for c in decomp if unicodedata.category(c) != 'Mn')
-    return base
+    all_gt_ner_list = []
+    all_gt_ner_ids_list = []
+    face_emb_list = []
+    obj_emb_list = []
+    img_tensor_list = []
+    face_pad = torch.ones((1, 512))
+    obj_pad = torch.ones((1,2048))
 
-def _build_normalized_text_and_map(text: str):
-    """
-    Return:
-      norm_text: accent-insensitive, lowercase text (same length as number of kept chars)
-      norm2orig: list mapping each index in norm_text -> original index in text
-    Notes:
-      - We DO NOT collapse spaces; we keep each original char (minus combining marks) 1:1 mapped.
-      - Combining marks are dropped and produce no output char (so mapping stays clean).
-    """
-    norm_chars = []
-    norm2orig = []
-    for i, ch in enumerate(text):
-        folded = _vn_fold_char(ch)
-        if not folded:  # e.g., standalone combining mark
-            continue
-        # We only keep exactly one char per original char to keep mapping simple.
-        # If folding returned multiple chars (very rare), take first.
-        out_ch = folded[0]
-        norm_chars.append(out_ch.lower())
-        norm2orig.append(i)
-    norm_text = ''.join(norm_chars)
-    return norm_text, norm2orig
+    person_id_positions_list = []
+    person_id_positions_cap_list = []
 
-def _fold_token_to_pattern(tok: str) -> str:
-    """
-    Fold token like the text; build a regex that tolerates any run of whitespace between parts.
-    Example: 'hoà   bình' -> r'hoa\s+binh'
-    """
-    # Basic cleanup similar to your pipeline
-    tok = tok.replace('_', ' ').replace('\u00A0', ' ').strip("•").strip()
-    # Per-char fold (diacritics off, đ->d), then lowercase
-    folded = ''.join(_vn_fold_char(c) for c in tok).lower()
-    # Split on any whitespace and join with \s+ so it matches spaces/newlines/tabs
-    parts = re.split(r'\s+', folded.strip())
-    # Escape non-whitespace parts for regex
-    return r'\s+'.join(re.escape(p) for p in parts if p)
+    for i in range(len(batch)):
+        article, article_ids,article_ner_mask_ids, caption, caption_ids, caption_ids_clip, names_art, org_norp_gpe_loc_art, names_art_ids, org_norp_gpe_loc_art_ids, names, org_norp_gpe_loc, names_ids, org_norp_gpe_loc_ids, all_gt_ner_ids, all_gt_ner, face_emb, obj_emb, img_tensor, person_id_positions, person_id_positions_cap = batch[i]["article"], batch[i]["article_ids"], batch[i]["article_ner_mask_ids"],batch[i]["caption"], batch[i]["caption_ids"], batch[i]["caption_ids_clip"], batch[i]["names_art"], batch[i]["org_norp_gpe_loc_art"], batch[i]["names_art_ids"], batch[i]["org_norp_gpe_loc_art_ids"], batch[i]["names"], batch[i]["org_norp_gpe_loc"], batch[i]["names_ids"], batch[i]["org_norp_gpe_loc_ids"], batch[i]["all_gt_ner_ids"], batch[i]["all_gt_ner"], batch[i]["face_emb"], batch[i]["obj_emb"], batch[i]["img_tensor"], batch[i]["person_id_positions"], batch[i]["person_id_positions_cap"]
 
-def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
-    """
-    Accent-insensitive, whitespace-tolerant alignment.
-    Returns (start_char, end_char) in ORIGINAL text for each token.
-    """
-    norm_text, norm2orig = _build_normalized_text_and_map(text)
-    offsets: List[Tuple[int, int]] = []
-    n_cursor = 0  # cursor in normalized text
+        names_ids_flatten, org_norp_gpe_loc_ids_flatten = batch[i]["names_ids_flatten"], batch[i]["org_norp_gpe_loc_ids_flatten"]
 
-    for tok in tokens:
-        pat = _fold_token_to_pattern(tok)
-        if not pat:
-            # empty after folding; skip defensively
-            offsets.append((n_cursor, n_cursor))
-            continue
+        names_ids_flatten_list.append(names_ids_flatten)
+        org_norp_gpe_loc_ids_flatten_list.append(org_norp_gpe_loc_ids_flatten)
 
-        # Search from current normalized cursor
-        m = re.search(pat, norm_text[n_cursor:])
-        if not m:
-            # Fallback: try from the beginning (in case cursor got desynced)
-            m = re.search(pat, norm_text)
-        if not m:
-            # Helpful debug before failing
-            near = text[norm2orig[n_cursor]: norm2orig[min(len(norm2orig)-1, n_cursor+120)]]
-            raise ValueError(
-                f"Cannot align token '{tok}' (pattern '{pat}') near original index "
-                f"{norm2orig[n_cursor] if n_cursor < len(norm2orig) else len(text)}. "
-                f"Context: {near!r}"
-            )
+        article_list.append(article)
+        article_id_list.append(article_ids)
+        article_ner_mask_id_list.append(article_ner_mask_ids)
+        caption_list.append(caption)
+        caption_id_list.append(caption_ids)
+        if caption_ids_clip is not None:
+            caption_id_clip_list.append(caption_ids_clip)
 
-        start_norm = (n_cursor + m.start()) if m.re is not None and m.string is norm_text else m.start()
-        end_norm   = (n_cursor + m.end())   if m.re is not None and m.string is norm_text else m.end()
+        names_art_list.append(names_art)
+        names_art_ids_list.append(names_art_ids)
+        org_norp_gpe_loc_art_list.append(org_norp_gpe_loc_art)
+        org_norp_gpe_loc_art_ids_list.append(org_norp_gpe_loc_art_ids)
 
-        # Map normalized span back to original indices
-        start_orig = norm2orig[start_norm]
-        end_orig   = norm2orig[end_norm - 1] + 1  # exclusive
+        names_list.append(names)
+        names_ids_list.append(names_ids)
+        org_norp_gpe_loc_list.append(org_norp_gpe_loc)
+        org_norp_gpe_loc_ids_list.append(org_norp_gpe_loc_ids)
 
-        offsets.append((start_orig, end_orig))
-        n_cursor = end_norm  # advance normalized cursor
+        all_gt_ner_list.append(all_gt_ner)
+        all_gt_ner_ids_list.append(all_gt_ner_ids)
+        
+        face_emb_list.append(face_emb)
+        obj_emb_list.append(obj_emb)
+        
+        img_tensor_list.append(img_tensor)
+        
+        person_id_positions_list.append(person_id_positions)
+        person_id_positions_cap_list.append(person_id_positions_cap)
+    
+    max_len_input = get_max_len([article_id_list, article_ner_mask_id_list])
+    # article_ids_batch = pad_article(article_id_list, 1)
+    article_ids_batch = pad_sequence(article_id_list, 1, max_len=max_len_input)
+    article_ner_mask_ids_batch = pad_sequence(article_ner_mask_id_list, 1, max_len=max_len_input)
+    # print(f"article batch: {article_ids_batch.size()}")
+    caption_ids_batch = pad_sequence(caption_id_list, 1)
+    # print(caption_ids_batch.size())
+    if len(caption_id_clip_list) > 0:
+        caption_ids_clip_batch = pad_sequence(caption_id_clip_list, 0)
+    else:
+        caption_ids_clip_batch = torch.empty((1,1))
+    
+    max_len_art_ids = get_max_len([names_art_ids_list, org_norp_gpe_loc_art_ids_list])
+    
+    max_len_name_ids = get_max_len_list(names_ids_list)
+    max_len_org_norp_gpe_loc_ids = get_max_len_list(org_norp_gpe_loc_ids_list)
+    
+    names_art_ids_batch = pad_sequence(names_art_ids_list, 1, max_len=max_len_art_ids)
+    org_norp_gpe_loc_art_ids_batch = pad_sequence(org_norp_gpe_loc_art_ids_list, 1, max_len=max_len_art_ids)
 
-    return offsets
+    names_ids_batch = pad_sequence_from_list(names_ids_list, special_token_id=50266, bos_token_id=0, pad_token_id=1, eos_token_id=2,  max_len=max_len_name_ids)
 
-def get_entities(doc, article_full):
-    entities = []
-    tokens = []
-    for subsent in doc:
-        for word in doc[subsent]:
-            ent_type = LABEL_MAP.get(word.get('nerLabel', ''), '')
-            ent_text = word.get('wordForm', '').strip()
-            if ent_type and ent_text:
-                ent_text = (' '.join(ent_text.split('_')).strip("•"))
-                tokens.append({
-                    "text": ent_text,
-                    "label": ent_type,          # luôn là PERON / ORGANIZATION / LOCATION
-                })
-    token_texts = [t['text'] for t in tokens]
-    token_offsets = align_tokens_to_text(article_full, token_texts)
-    for t, (s, e) in zip(tokens, token_offsets):
-        entities.append({
-            'text': t['text'],
-            'label': t['label'],  
-            "position":[s,e]
-        })
-    return entities
+    org_norp_gpe_loc_ids_batch = pad_sequence_from_list(org_norp_gpe_loc_ids_list, special_token_id=50266, bos_token_id=0, pad_token_id=1, eos_token_id=2, max_len=max_len_org_norp_gpe_loc_ids)
+
+    all_gt_ner_ids_batch = pad_sequence(all_gt_ner_ids_list, 1)
+
+    max_len_ids_flatten = get_max_len([names_ids_flatten_list, org_norp_gpe_loc_ids_flatten_list])
+    names_ids_flatten_batch = pad_sequence(names_ids_flatten_list, 1, max_len=max_len_ids_flatten)
+    org_norp_gpe_loc_ids_flatten_batch = pad_sequence(org_norp_gpe_loc_ids_flatten_list, 1, max_len=max_len_ids_flatten)
+    
+    img_batch = torch.stack(img_tensor_list, dim=0).squeeze(1)
+    # print(img_batch.size())
+
+    face_batch = pad_tensor_feat(face_emb_list, face_pad)
+    obj_batch = pad_tensor_feat(obj_emb_list, obj_pad)
+
+    return {"article": article_list, "article_ids":article_ids_batch.squeeze(1), "article_ner_mask_ids":article_ner_mask_ids_batch.squeeze(1), "caption": caption_list, "caption_ids": caption_ids_batch.squeeze(1), "caption_ids_clip": caption_ids_clip_batch.squeeze(1), "names_art": names_art_list, "names_art_ids": names_art_ids_batch.squeeze(1), "org_norp_gpe_loc_art": org_norp_gpe_loc_art_list, "org_norp_gpe_loc_art_ids": org_norp_gpe_loc_art_ids_batch.squeeze(1), "names":names_list, "names_ids":names_ids_batch.squeeze(1), "org_norp_gpe_loc":org_norp_gpe_loc_list, "org_norp_gpe_loc_ids":org_norp_gpe_loc_ids_batch.squeeze(1), "all_gt_ner_ids":all_gt_ner_ids_batch.squeeze(1), "all_gt_ner":all_gt_ner_list, "face_emb":face_batch.float(), "obj_emb":obj_batch.float(), "img_tensor":img_batch, "person_id_positions":person_id_positions_list, "person_id_positions_cap":person_id_positions_cap_list, "names_ids_flatten":names_ids_flatten_batch.squeeze(1), "org_norp_gpe_loc_ids_flatten":org_norp_gpe_loc_ids_flatten_batch.squeeze(1)}
 
 
 
@@ -183,6 +132,28 @@ def get_max_len_list(seq_list_of_list):
         max_len_list.extend([len(seq) for seq in seq_list])
     return max(max_len_list)
 
+# def pad_sequence_from_list(seq_list_list, special_token_id, bos_token_id, pad_token_id, eos_token_id, max_len):
+#     # special_token_id: <NONAME>
+#     max_num_seq = max([len(seq_list) for seq_list in seq_list_list])
+#     padded_list_all = []
+#     for seq_list in seq_list_list:
+#         padded_list = []
+#         for seq in seq_list:
+#             # pad in each sample
+#             pad_num = max_len - len(seq)
+#             seq = seq + [pad_token_id] * pad_num
+#             # print(seq, pad_num)
+#             if max_num_seq == 1:
+#                 padded_list.append([seq])
+#             else:
+#                 padded_list.append(seq)
+#         if len(seq_list) < max_num_seq:
+#             # pad in each batch
+#             pad_batch_wise = [bos_token_id] + [special_token_id] + [eos_token_id] + [pad_token_id] * (max_len-3)
+#             for i in range(max_num_seq - len(seq_list)):
+#                 padded_list.append(pad_batch_wise)
+#         padded_list_all.append(torch.tensor(padded_list, dtype=torch.long))
+#     return torch.stack(padded_list_all)
 
 def pad_sequence_from_list(seq_list_list, special_token_id, bos_token_id, pad_token_id, eos_token_id, max_len):
     # special_token_id: <NONAME>
@@ -191,20 +162,31 @@ def pad_sequence_from_list(seq_list_list, special_token_id, bos_token_id, pad_to
     for seq_list in seq_list_list:
         padded_list = []
         for seq in seq_list:
-            # pad in each sample
+            # accept (1, L) or (L,) tensors/arrays by flattening to 1D list[int]
+            if isinstance(seq, torch.Tensor):
+                seq = seq.detach().cpu().long().reshape(-1).tolist()
+            elif isinstance(seq, np.ndarray):
+                seq = np.asarray(seq).astype(np.int64).reshape(-1).tolist()
+
+            # pad/truncate to max_len
+            if len(seq) > max_len:
+                seq = seq[:max_len]  # why: prevent negative padding + keep fixed L
             pad_num = max_len - len(seq)
             seq = seq + [pad_token_id] * pad_num
-            # print(seq, pad_num)
+
             if max_num_seq == 1:
-                padded_list.append([seq])
+                padded_list.append([seq])   # keep shape (B, 1, L) when M==1
             else:
                 padded_list.append(seq)
+
         if len(seq_list) < max_num_seq:
-            # pad in each batch
-            pad_batch_wise = [bos_token_id] + [special_token_id] + [eos_token_id] + [pad_token_id] * (max_len-3)
-            for i in range(max_num_seq - len(seq_list)):
+            # pad in each batch with BOS <NONAME> EOS + PAD...
+            pad_batch_wise = [bos_token_id] + [special_token_id] + [eos_token_id] + [pad_token_id] * (max_len - 3)
+            for _ in range(max_num_seq - len(seq_list)):
                 padded_list.append(pad_batch_wise)
+
         padded_list_all.append(torch.tensor(padded_list, dtype=torch.long))
+
     return torch.stack(padded_list_all)
 
 
@@ -215,29 +197,23 @@ def get_max_len(seq_tensor_list_of_list):
         max_len_list.append(max([seq.size(1) for seq in seq_tensor_list]))
     return max(max_len_list)
 
+
 def pad_sequence(seq_tensor_list, pad_token_id, max_len=None):
-    """
-    Chuẩn hoá mọi tensor về (1, max_len) rồi stack → (B, 1, max_len).
-    Hỗ trợ input (L,), (1,L), (1,1,L) v.v.
-    """
-    # 1. đưa tất cả tensor về 1-chiều
-    flat = [seq.view(-1) for seq in seq_tensor_list]
+    if max_len is None:
+        max_len = max([seq.size(1) for seq in seq_tensor_list])
 
-    # 2. xác định max_len đúng
-    true_max = max(t.size(0) for t in flat)
-    if max_len is None or true_max > max_len:
-        max_len = true_max
-
-    pad_tok = torch.tensor(pad_token_id, dtype=torch.long)
-
-    padded = []
-    for t in flat:
-        if t.size(0) < max_len:                  # cần pad
-            pad = pad_tok.repeat(max_len - t.size(0))
-            t   = torch.cat((t, pad), dim=0)
-        padded.append(t.unsqueeze(0))            # -> (1,max_len)
-
-    return torch.stack(padded)                   # (B,1,max_len)
+    pad_token = torch.tensor([pad_token_id])
+    padded_list = []
+    for seq in seq_tensor_list:
+        # print(seq.size())
+        pad_num = max_len - seq.size(1)
+        if pad_num > 0:
+            to_be_padded = torch.tensor([pad_token]*pad_num, dtype=torch.long).unsqueeze(0)
+            # padded_seq = torch.cat((seq, to_be_padded), dim=0)
+            padded_list.append(torch.cat((seq, to_be_padded), dim=1))
+        else:
+            padded_list.append(seq)
+    return torch.stack(padded_list)
 
 
 def pad_sequence_lm(seq_tensor_list, sos_token_id, eos_token_id, pad_token_id):
@@ -293,38 +269,39 @@ def pad_article(seq_tensor_list, pad_token_id):
     return torch.stack(padded_list_out)
 
 
-# def pad_tensor_feat(feat_np_list, pad_feat_tensor):
-#     # tensor_list = [torch.from_numpy(feat) for feat in feat_np_list]
-#     len_list = []
-#     for feat in feat_np_list:
-#         if feat.shape[1] == 0:
-#             len_list.append(0)
-#         else:
-#             len_list.append(feat.shape[0])
-#     max_len = max(len_list)
-#     # print(max_len)
-#     padded_list = []
-#     for i, feat in enumerate(feat_np_list):
-#         pad_num = max_len - len_list[i]
-#         if pad_num > 0:
-#             to_be_padded = pad_num* [pad_feat_tensor]
-#             to_be_padded = torch.stack(to_be_padded, dim=0)
-#             to_be_padded = to_be_padded.squeeze(1)
-#             # print(to_be_padded.size())
-#             if feat.shape[1] != 0:
-#                 # padded_list.append(torch.stack((torch.from_numpy(feat), to_be_padded), dim=0).squeeze(1))
-#                 padded_list.append(torch.cat((torch.from_numpy(feat), to_be_padded), dim=0).squeeze(1))
-#             else:
-#                 padded_list.append(to_be_padded)
-#         elif max_len == 0:
-#             to_be_padded = 1* [pad_feat_tensor]
-#             to_be_padded = torch.stack(to_be_padded, dim=0)
-#             to_be_padded = to_be_padded.squeeze(1)
-#             padded_list.append(to_be_padded)
-#         else:
-#             # print(torch.from_numpy(feat).size())
-#             padded_list.append(torch.from_numpy(feat))
-#     return  torch.stack(padded_list)
+def pad_tensor_feat(feat_np_list, pad_feat_tensor):
+    # tensor_list = [torch.from_numpy(feat) for feat in feat_np_list]
+    len_list = []
+    for feat in feat_np_list:
+        if feat.shape[1] == 0:
+            len_list.append(0)
+        else:
+            len_list.append(feat.shape[0])
+    max_len = max(len_list)
+    # print(max_len)
+    padded_list = []
+    for i, feat in enumerate(feat_np_list):
+        pad_num = max_len - len_list[i]
+        if pad_num > 0:
+            to_be_padded = pad_num* [pad_feat_tensor]
+            to_be_padded = torch.stack(to_be_padded, dim=0)
+            to_be_padded = to_be_padded.squeeze(1)
+            # print(to_be_padded.size())
+            if feat.shape[1] != 0:
+                # padded_list.append(torch.stack((torch.from_numpy(feat), to_be_padded), dim=0).squeeze(1))
+                padded_list.append(torch.cat((torch.from_numpy(feat), to_be_padded), dim=0).squeeze(1))
+            else:
+                padded_list.append(to_be_padded)
+        elif max_len == 0:
+            to_be_padded = 1* [pad_feat_tensor]
+            to_be_padded = torch.stack(to_be_padded, dim=0)
+            to_be_padded = to_be_padded.squeeze(1)
+            padded_list.append(to_be_padded)
+        else:
+            # print(torch.from_numpy(feat).size())
+            padded_list.append(torch.from_numpy(feat))
+    return  torch.stack(padded_list)
+
 
 
 def make_new_entity_ids(caption, ent_list, tokenizer, ent_separator="<ent>", max_length=80):
@@ -394,7 +371,7 @@ def pad_list(list_of_name_ids, pad_token):
     return padded_list
 
 
-def get_person_ids_position(article_ids_replaced, person_token_id=40030, article_max_length=512, is_tgt_input=False):
+def get_person_ids_position(article_ids_replaced, person_token_id=50265, article_max_length=512, is_tgt_input=False):
     position_list = []
     # for i in range(len(article_ids_replaced)):
     i = 0
@@ -422,496 +399,268 @@ def get_person_ids_position(article_ids_replaced, person_token_id=40030, article
     return position_list
 
 
-
-# goodnews_vi_dataset.py
-import os, json, copy
-from PIL import Image
-import numpy as np
-import torch
-from torch.utils.data import Dataset
-from open_clip import tokenize as clip_tokenize   
-import torchvision.transforms as T 
-from torchvision.transforms import ToPILImage
-# -------------------------------------------------
-
-
-# def pad_tensor_feat(feat_np_list, pad_feat_tensor, expected_dim):
-#     len_list = []
-
-#     # Kiểm tra các tensor có hợp lệ không
-#     for feat in feat_np_list:
-#         if len(feat.shape) != 2 or feat.shape[1] != expected_dim or np.isnan(feat).any() or np.isinf(feat).any():
-#             len_list.append(1)  # Tensor không hợp lệ, dùng độ dài 1
-#         else:
-#             len_list.append(feat.shape[0])
-
-#     # Tính độ dài tối đa của các tensor hợp lệ
-#     max_len = max(len_list) if max(len_list) > 0 else 1
-
-#     padded_list = []
-#     for i, feat in enumerate(feat_np_list):
-#         # Kiểm tra lại tensor có hợp lệ không
-#         if len(feat.shape) != 2 or feat.shape[1] != expected_dim or np.isnan(feat).any() or np.isinf(feat).any():
-#             # Nếu không có mặt hoặc đối tượng, sử dụng tensor padding mặc định
-#             padded = pad_feat_tensor.repeat(max_len, 1)
-#         else:
-#             # Nếu tensor hợp lệ, thực hiện padding
-#             pad_num = max_len - feat.shape[0]
-#             if pad_num > 0:
-#                 to_be_padded = pad_feat_tensor.repeat(pad_num, 1)
-#                 padded = torch.cat((torch.from_numpy(feat).float(), to_be_padded), dim=0)
-#             else:
-#                 padded = torch.from_numpy(feat).float()
-#         padded_list.append(padded)
-
-#     result = torch.stack(padded_list)
-
-#     # Kiểm tra NaN/Inf trong kết quả đầu ra
-#     if torch.isnan(result).any() or torch.isinf(result).any():
-#         print(f"Cảnh báo: Tensor đầu ra chứa NaN hoặc Inf, trả về tensor mặc định")
-#         return pad_feat_tensor.repeat(len(feat_np_list), max_len, 1)
-    
-#     return result
-
-
-
-def pad_tensor_feat(feat_list, pad_feat_tensor):
-    """
-    Pad các tensor đặc trưng đến độ dài tối đa bằng cách thêm tensor pad.
-    
-    Tham số:
-        feat_list (list of Tensor): Danh sách các tensor.
-        pad_feat_tensor (torch.Tensor): Tensor pad để thêm vào.
-    
-    Trả về:
-        torch.Tensor: Tensor đã được pad với kích thước (batch_size, max_len, feature_dim).
-    """
-    tensor_list = []
-    
-    for feat in feat_list:
-        if isinstance(feat, np.ndarray):
-            tensor_list.append(torch.from_numpy(feat))
-        elif isinstance(feat, torch.Tensor):
-            tensor_list.append(feat)
+class ViWikiDictDatasetEntityType(Dataset):
+    def __init__(self, data_dict, data_base_dir, tokenizer, use_clip_tokenizer=False, entity_token_start="no", entity_token_end="no", transform=None, max_article_len=512, max_ner_type_len=128):
+        super().__init__()
+        self.data_dict = copy.deepcopy(data_dict)
+        self.face_dir = os.path.join(data_base_dir, "faces")
+        self.obj_dir = os.path.join(data_base_dir, "objects")
+        self.article_dir = os.path.join(data_base_dir, "articles")
+        self.article_ner_mask_dir = os.path.join(data_base_dir, "articles_full_pog_by_count")
+        self.img_dir = os.path.join(data_base_dir, "images_processed")
+        self.tokenizer = tokenizer
+        self.use_clip_tokenizer = use_clip_tokenizer
+        self.max_len = max_article_len
+        self.transform = transform
+        self.entity_token_start = entity_token_start
+        self.entity_token_end = entity_token_end
+        self.hash_ids = [*data_dict.keys()]
+        self.max_ner_type_len = max_ner_type_len
+    def __getitem__(self, index):
+        hash_id = self.hash_ids[index]
+        img = Image.open(os.path.join(self.img_dir, f"{hash_id}.jpg")).convert('RGB')
+        if self.data_dict[hash_id]["face_emb_dir"] != []:
+            face_emb = np.load(os.path.join(self.face_dir, f"{hash_id}.npy"))
+            names = self.data_dict[hash_id]["names"]
         else:
-            raise TypeError(f"Expected np.ndarray or torch.Tensor, but got {type(feat)}")
-
-    lengths = [tensor.size(0) for tensor in tensor_list]
-    max_len = max(lengths) if lengths else 0
-    
-    padded_tensors = []
-    for tensor in tensor_list:
-        # Nếu tensor rỗng, chuyển về dạng có shape (0, feature_dim)
-        if tensor.numel() == 0:
-            tensor = tensor.view(0, pad_feat_tensor.size(1))
+            face_emb = np.array([[]])
+            names = []
         
-        if tensor.size(0) < max_len:
-            pad_length = max_len - tensor.size(0)
-            pad_tensor_expanded = pad_feat_tensor.repeat(pad_length, 1)
-            padded_tensor = torch.cat([tensor, pad_tensor_expanded], dim=0)
+        if self.data_dict[hash_id]["obj_emb_dir"] != []:
+            obj_emb = np.load(os.path.join(self.obj_dir, f"{hash_id}.npy"))
         else:
-            padded_tensor = tensor[:max_len]
-        padded_tensors.append(padded_tensor)
-    
-    if padded_tensors:
-        return torch.stack(padded_tensors, dim=0)
-    else:
-        return torch.empty((0, pad_feat_tensor.size(1)))
-
-
-import torch
-from torchvision.transforms import ToPILImage
-import torchvision.transforms as T
-
-def collate_fn_goodnews_entity_type(batch, noname_id: int, tokenizer):
-    article_list = []
-    article_id_list = []
-    article_ner_mask_id_list = []
-    caption_list = []
-    caption_id_list = []
-    caption_id_clip_list = []
-    names_art_list = []
-    names_art_ids_list = []
-    org_norp_gpe_loc_art_list = []
-    org_norp_gpe_loc_art_ids_list = []
-    names_list = []
-    names_ids_list = []
-    org_norp_gpe_loc_list = []
-    org_norp_gpe_loc_ids_list = []
-    names_ids_flatten_list = []
-    org_norp_gpe_loc_ids_flatten_list = []
-    all_gt_ner_list = []
-    all_gt_ner_ids_list = []
-    face_emb_list = []
-    obj_emb_list = []
-    img_tensor_list = []
-    face_pad = torch.ones((1, 512))
-    obj_pad = torch.ones((1, 1000))
-    person_id_positions_list = []
-    person_id_positions_cap_list = []
-
-    resize_transform = T.Compose([T.Resize((224, 224)), T.ToTensor()])
-    to_pil_image = ToPILImage()
-
-    for i in range(len(batch)):
-        article, article_ids, article_ner_mask_ids, caption, caption_ids, caption_ids_clip, \
-        names_art, org_norp_gpe_loc_art, names_art_ids, org_norp_gpe_loc_art_ids, \
-        names, org_norp_gpe_loc, names_ids, org_norp_gpe_loc_ids, all_gt_ner_ids, \
-        all_gt_ner, face_emb, obj_emb, img_tensor, person_id_positions, person_id_positions_cap = \
-            batch[i]["article"], batch[i]["article_ids"], batch[i]["article_ner_mask_ids"], \
-            batch[i]["caption"], batch[i]["caption_ids"], batch[i]["caption_ids_clip"], \
-            batch[i]["names_art"], batch[i]["org_norp_gpe_loc_art"], batch[i]["names_art_ids"], \
-            batch[i]["org_norp_gpe_loc_art_ids"], batch[i]["names"], batch[i]["org_norp_gpe_loc"], \
-            batch[i]["names_ids"], batch[i]["org_norp_gpe_loc_ids"], batch[i]["all_gt_ner_ids"], \
-            batch[i]["all_gt_ner"], batch[i]["face_emb"], batch[i]["obj_emb"], batch[i]["img_tensor"], \
-            batch[i]["person_id_positions"], batch[i]["person_id_positions_cap"]
+            obj_emb = np.array([[]])
         
-        names_ids_flatten, org_norp_gpe_loc_ids_flatten = \
-            batch[i]["names_ids_flatten"], batch[i]["org_norp_gpe_loc_ids_flatten"]
+        with open(os.path.join(os.path.join(self.article_dir, f"{hash_id}.txt"))) as f:
+            # article = f.readlines()
+            article = f.read()
+        
+        caption = self.data_dict[hash_id]["caption"]
+        names = self.data_dict[hash_id]["names"]
+        org_norp = self.data_dict[hash_id]["org_norp"]
+        gpe_loc = self.data_dict[hash_id]["gpe_loc"]
+        names_art = self.data_dict[hash_id]["names_art"]
+        org_norp_art = self.data_dict[hash_id]["org_norp_art"]
+        gpe_loc_art = self.data_dict[hash_id]["gpe_loc_art"]
+        # article = preprocess_article(article)
 
-        # Xử lý kiểu dữ liệu của các trường ID
-        def sanitize_ids(ids):
-            if isinstance(ids, torch.Tensor):
-                ids = ids.tolist()
-            if isinstance(ids, list) and all(isinstance(x, list) for x in ids):
-                ids = [item for sublist in ids for item in sublist]  # Làm phẳng danh sách lồng nhau
-            return [int(id) if id < tokenizer.vocab_size else noname_id for id in ids]
+        # delete repetitive names
+        new_names_art_list = []
+        for i in range(len(names_art)):
+            if compare_ner(names_art[i], names_art[:i] + names_art[i+1:]):
+                continue
+            else:
+                new_names_art_list.append(names_art[i])
+        concat_names_art = concat_ner(new_names_art_list, self.entity_token_start, self.entity_token_end)
+        concat_names = concat_ner(names, self.entity_token_start, self.entity_token_end)
 
-        names_ids = sanitize_ids(names_ids)
-        names_art_ids = sanitize_ids(names_art_ids)
-        names_ids_flatten = sanitize_ids(names_ids_flatten)
-        org_norp_gpe_loc_ids = sanitize_ids(org_norp_gpe_loc_ids)
-        org_norp_gpe_loc_ids_flatten = sanitize_ids(org_norp_gpe_loc_ids_flatten)
-        all_gt_ner_ids = sanitize_ids(all_gt_ner_ids)
-        org_norp_gpe_loc_art_ids = sanitize_ids(org_norp_gpe_loc_art_ids)
 
-        names_ids_flatten_list.append(torch.tensor(names_ids_flatten, dtype=torch.long))
-        org_norp_gpe_loc_ids_flatten_list.append(torch.tensor(org_norp_gpe_loc_ids_flatten, dtype=torch.long))
-        names_ids_list.append(torch.tensor(names_ids, dtype=torch.long))
-        names_art_ids_list.append(torch.tensor(names_art_ids, dtype=torch.long))
-        org_norp_gpe_loc_ids_list.append(torch.tensor(org_norp_gpe_loc_ids, dtype=torch.long))
-        org_norp_gpe_loc_art_ids_list.append(torch.tensor(org_norp_gpe_loc_art_ids, dtype=torch.long))
-        all_gt_ner_ids_list.append(torch.tensor(all_gt_ner_ids, dtype=torch.long))
+        # delete repetitive orgs
+        new_org_norp_art_list = []
+        for i in range(len(org_norp_art)):
+            if compare_ner(org_norp_art[i], org_norp_art[:i] + org_norp_art[i+1:]):
+                continue
+            else:
+                new_org_norp_art_list.append(org_norp_art[i])
+        concat_org_norp_art = concat_ner(new_org_norp_art_list, self.entity_token_start, self.entity_token_end)
+        concat_org_norp = concat_ner(org_norp, self.entity_token_start, self.entity_token_end)
 
-        article_list.append(article)
-        article_id_list.append(article_ids)
-        article_ner_mask_id_list.append(article_ner_mask_ids)
-        caption_list.append(caption)
-        caption_id_list.append(caption_ids)
-        if caption_ids_clip is not None:
-            caption_id_clip_list.append(caption_ids_clip)
 
-        names_art_list.append(names_art)
-        org_norp_gpe_loc_art_list.append(org_norp_gpe_loc_art)
-        names_list.append(names)
-        org_norp_gpe_loc_list.append(org_norp_gpe_loc)
-        all_gt_ner_list.append(all_gt_ner)
+        # delete repetitive gpe
+        new_gpe_loc_art_list = []
+        for i in range(len(gpe_loc_art)):
+            if compare_ner(gpe_loc_art[i], gpe_loc_art[:i] + gpe_loc_art[i+1:]):
+                continue
+            else:
+                new_gpe_loc_art_list.append(gpe_loc_art[i])
+        concat_gpe_loc_art = concat_ner(new_gpe_loc_art_list, self.entity_token_start, self.entity_token_end)
+        concat_gpe_loc = concat_ner(gpe_loc, self.entity_token_start, self.entity_token_end)
 
-        if face_emb is None or len(face_emb) == 0:
-            face_emb = face_pad
+        all_gt_ner = names + org_norp + gpe_loc
+        # print(all_gt_ner)
+        concat_gt_ner = concat_ner(all_gt_ner, self.entity_token_start, self.entity_token_end)
+        # print(concat_gt_ner)
+        gt_ner_ids = self.tokenizer(concat_gt_ner, return_tensors="pt", truncation=True, max_length=self.max_ner_type_len)["input_ids"]
+        
+        article_ids = self.tokenizer(article, return_tensors="pt", truncation=True, padding=True,max_length=self.max_len)["input_ids"]
+
+        with open(os.path.join(os.path.join(self.article_ner_mask_dir, f"{hash_id}.json"))) as f:
+            article_ner_mask_dict = json.load(f)
+        if len(article_ner_mask_dict["input_ids"]) > self.max_len:
+            article_ner_mask_ids = torch.LongTensor(article_ner_mask_dict["input_ids"][:self.max_len-1] + [2])
         else:
-            face_emb = torch.from_numpy(face_emb).float()
-            face_emb = torch.nan_to_num(face_emb, nan=0.0, posinf=1e4, neginf=-1e4)
-            if torch.isnan(face_emb).any() or torch.isinf(face_emb).any():
-                print(f"Cảnh báo: face_emb chứa NaN/Inf tại mẫu {i}. Thay thế bằng tensor mặc định.")
-                face_emb = face_pad
-
-        if obj_emb is None or len(obj_emb) == 0:
-            obj_emb = obj_pad
+            article_ner_mask_ids = torch.LongTensor(article_ner_mask_dict["input_ids"])
+        article_ner_mask_ids = article_ner_mask_ids.unsqueeze(0)
+        
+        
+        caption_ids = self.tokenizer(caption, return_tensors="pt", truncation=True,  max_length=100)["input_ids"]
+        if self.use_clip_tokenizer:
+            import clip
+            # caption_ids_clip = clip.tokenize(caption, context_length=100, truncate=True)
+            caption_ids_clip = clip.tokenize(caption, truncate=True)
         else:
-            obj_emb = torch.from_numpy(obj_emb).float()
-            obj_emb = torch.nan_to_num(obj_emb, nan=0.0, posinf=1e4, neginf=-1e4)
-            if torch.isnan(obj_emb).any() or torch.isinf(obj_emb).any():
-                print(f"Cảnh báo: obj_emb chứa NaN/Inf tại mẫu {i}. Thay thế bằng tensor mặc định.")
-                obj_emb = obj_pad
+            caption_ids_clip = None
+        # print(caption_ids)
+        # ner_ids = [self.tokenizer(ner, return_tensors="pt")["input_ids"] for ner in new_ner_list]
+        names_art_ids = self.tokenizer(concat_names_art, return_tensors="pt", truncation=True, max_length=self.max_ner_type_len)["input_ids"]
+        names_ids = self.tokenizer(concat_names, return_tensors="pt", truncation=True, max_length=self.max_ner_type_len)["input_ids"]
 
-        face_emb_list.append(face_emb)
-        obj_emb_list.append(obj_emb)
+        org_norp_art_ids = self.tokenizer(concat_org_norp_art, return_tensors="pt", truncation=True, max_length=self.max_ner_type_len)["input_ids"]
+        org_norp_ids = self.tokenizer(concat_org_norp, return_tensors="pt", truncation=True, max_length=self.max_ner_type_len)["input_ids"]
 
-        if isinstance(img_tensor, torch.Tensor):
-            img_pil = to_pil_image(img_tensor.squeeze(0))
-        else:
-            img_pil = img_tensor
-        img_tensor_resized = resize_transform(img_pil)
-        img_tensor_list.append(img_tensor_resized)
+        gpe_loc_art_ids = self.tokenizer(concat_gpe_loc_art, return_tensors="pt", truncation=True, max_length=self.max_ner_type_len)["input_ids"]
+        gpe_loc_ids = self.tokenizer(concat_gpe_loc, return_tensors="pt", truncation=True, max_length=self.max_ner_type_len)["input_ids"]
+        # name_ids = [self.tokenizer(name, return_tensors="pt")["input_ids"] for name in names]
+        img_tensor = self.transform(img).unsqueeze(0)
 
-        person_id_positions_list.append(person_id_positions)
-        person_id_positions_cap_list.append(person_id_positions_cap)
-    
-    max_len_input = get_max_len([article_id_list, article_ner_mask_id_list])
-    article_ids_batch = pad_sequence(article_id_list, 1, max_len=max_len_input)
-    article_ner_mask_ids_batch = pad_sequence(article_ner_mask_id_list, 1, max_len=max_len_input)
-    caption_ids_batch = pad_sequence(caption_id_list, 1)
-    if len(caption_id_clip_list) > 0:
-        caption_ids_clip_batch = pad_sequence(caption_id_clip_list, 0)
-    else:
-        caption_ids_clip_batch = torch.empty((1,1))
-    
-    max_len_art_ids = get_max_len([names_art_ids_list, org_norp_gpe_loc_art_ids_list])
-    names_art_ids_batch = pad_sequence(names_art_ids_list, 1, max_len=max_len_art_ids)
-    org_norp_gpe_loc_art_ids_batch = pad_sequence(org_norp_gpe_loc_art_ids_list, 1, max_len=max_len_art_ids)
+        return {"article": article, "article_ids":article_ids,"article_ner_mask_ids":article_ner_mask_ids, "caption": caption, "caption_ids": caption_ids, "caption_ids_clip": caption_ids_clip, "names_art": new_names_art_list, "org_norp_art": new_org_norp_art_list, "gpe_loc_art": new_gpe_loc_art_list, "names_art_ids": names_art_ids, "org_norp_art_ids": org_norp_art_ids, "gpe_loc_art_ids": gpe_loc_art_ids, "names": names, "org_norp": org_norp, "gpe_loc": gpe_loc, "names_ids": names_ids, "org_norp_ids": org_norp_ids, "gpe_loc_ids": gpe_loc_ids, "all_gt_ner_ids":gt_ner_ids, "face_emb":face_emb, "obj_emb":obj_emb, "img_tensor":img_tensor}
+    def __len__(self):
+        return len(self.data_dict)
 
-    max_len_name_ids = get_max_len_list(names_ids_list)
-    names_ids_batch = pad_sequence_from_list(names_ids_list, special_token_id=noname_id, 
-                                            bos_token_id=0, pad_token_id=1, eos_token_id=2, 
-                                            max_len=max_len_name_ids)
 
-    max_len_org_norp_gpe_loc_ids = get_max_len_list(org_norp_gpe_loc_ids_list)
-    org_norp_gpe_loc_ids_batch = pad_sequence_from_list(org_norp_gpe_loc_ids_list, 
-                                                       special_token_id=noname_id, 
-                                                       bos_token_id=0, pad_token_id=1, 
-                                                       eos_token_id=2, 
-                                                       max_len=max_len_org_norp_gpe_loc_ids)
 
-    all_gt_ner_ids_batch = pad_sequence(all_gt_ner_ids_list, 1)
-
-    max_len_ids_flatten = get_max_len([names_ids_flatten_list, org_norp_gpe_loc_ids_flatten_list])
-    names_ids_flatten_batch = pad_sequence(names_ids_flatten_list, 1, max_len=max_len_ids_flatten)
-    org_norp_gpe_loc_ids_flatten_batch = pad_sequence(org_norp_gpe_loc_ids_flatten_list, 1, max_len=max_len_ids_flatten)
-    
-    img_batch = torch.stack(img_tensor_list, dim=0).squeeze(1)
-    face_batch = pad_tensor_feat(face_emb_list, face_pad)
-    obj_batch = pad_tensor_feat(obj_emb_list, obj_pad)
-
-    # Kiểm tra NaN/Inf cho tất cả batch
-    assert torch.isfinite(article_ids_batch).all(), "article_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(article_ner_mask_ids_batch).all(), "article_ner_mask_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(caption_ids_batch).all(), "caption_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(names_art_ids_batch).all(), "names_art_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(org_norp_gpe_loc_art_ids_batch).all(), "org_norp_gpe_loc_art_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(names_ids_batch).all(), "names_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(org_norp_gpe_loc_ids_batch).all(), "org_norp_gpe_loc_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(all_gt_ner_ids_batch).all(), "all_gt_ner_ids_batch chứa NaN/Inf"
-    assert torch.isfinite(names_ids_flatten_batch).all(), "names_ids_flatten_batch chứa NaN/Inf"
-    assert torch.isfinite(org_norp_gpe_loc_ids_flatten_batch).all(), "org_norp_gpe_loc_ids_flatten_batch chứa NaN/Inf"
-    assert torch.isfinite(img_batch).all(), "img_batch chứa NaN/Inf"
-    assert torch.isfinite(face_batch).all(), "face_batch chứa NaN/Inf"
-    assert torch.isfinite(obj_batch).all(), "obj_batch chứa NaN/Inf"
-
-    # Kiểm tra ID hợp lệ
-    assert names_art_ids_batch.max() < tokenizer.vocab_size, f"names_art_ids_batch chứa ID vượt quá vocab_size: {names_art_ids_batch.max()} >= {tokenizer.vocab_size}"
-    assert names_ids_flatten_batch.max() < tokenizer.vocab_size, f"names_ids_flatten_batch chứa ID vượt quá vocab_size: {names_ids_flatten_batch.max()} >= {tokenizer.vocab_size}"
-    assert org_norp_gpe_loc_ids_flatten_batch.max() < tokenizer.vocab_size, f"org_norp_gpe_loc_ids_flatten_batch chứa ID vượt quá vocab_size: {org_norp_gpe_loc_ids_flatten_batch.max()} >= {tokenizer.vocab_size}"
-    assert all_gt_ner_ids_batch.max() < tokenizer.vocab_size, f"all_gt_ner_ids_batch chứa ID vượt quá vocab_size: {all_gt_ner_ids_batch.max()} >= {tokenizer.vocab_size}"
-
-    return {
-        "article": article_list,
-        "article_ids": article_ids_batch.squeeze(1),
-        "article_ner_mask_ids": article_ner_mask_ids_batch.squeeze(1),
-        "caption": caption_list,
-        "caption_ids": caption_ids_batch.squeeze(1),
-        "caption_ids_clip": caption_ids_clip_batch.squeeze(1),
-        "names_art": names_art_list,
-        "names_art_ids": names_art_ids_batch.squeeze(1),
-        "org_norp_gpe_loc_art": org_norp_gpe_loc_art_list,
-        "org_norp_gpe_loc_art_ids": org_norp_gpe_loc_art_ids_batch.squeeze(1),
-        "names": names_list,
-        "names_ids": names_ids_batch.squeeze(1),
-        "org_norp_gpe_loc": org_norp_gpe_loc_list,
-        "org_norp_gpe_loc_ids": org_norp_gpe_loc_ids_batch.squeeze(1),
-        "all_gt_ner_ids": all_gt_ner_ids_batch.squeeze(1),
-        "all_gt_ner": all_gt_ner_list,
-        "face_emb": face_batch.float(),
-        "obj_emb": obj_batch.float(),
-        "img_tensor": img_batch,
-        "person_id_positions": person_id_positions_list,
-        "person_id_positions_cap": person_id_positions_cap_list,
-        "names_ids_flatten": names_ids_flatten_batch.squeeze(1),
-        "org_norp_gpe_loc_ids_flatten": org_norp_gpe_loc_ids_flatten_batch.squeeze(1)
-    }
 
 
 class GoodNewsDictDatasetEntityTypeFixLenEntPos(Dataset):
-    """
-    Phiên bản tiếng Việt: đọc thẳng sents_byclip trong JSON, face/obj embedding,
-    ảnh & mask NER đã sinh ở bước pre-process.
-    """
-    def __init__(
-        self,
-        data_dict: dict,
-        base_dir: str,
-        tokenizer,
-        transform,
-        type: str         ,
-        max_article_len: int = 512,
-        max_ner_type_len: int = 80,
-        max_ner_type_len_gt: int = 20,
-        use_clip_tokenizer: bool = False,
-        retrieved_sent: bool = True,
-        
-    ):
+    def __init__(self, data_dict, data_base_dir, tokenizer, use_clip_tokenizer=False, entity_token_start="no", entity_token_end="no", transform=None, max_article_len=512, max_ner_type_len=80, max_ner_type_len_gt=20, retrieved_sent=False, person_token_id=50265):
         super().__init__()
-        self.meta = copy.deepcopy(data_dict)
-        self.tok  = tokenizer
-        self.tr   = transform
-        self.clip = use_clip_tokenizer
-        self.max_article = max_article_len
-        self.max_ent_len = max_ner_type_len
-        self.max_ent_gt  = max_ner_type_len_gt
+        self.data_dict = copy.deepcopy(data_dict)
+        self.face_dir = os.path.join(data_base_dir, "faces")
+        self.obj_dir = os.path.join(data_base_dir, "objects")
+        self.article_dir = os.path.join(data_base_dir, "articles_full")
+        self.article_ner_mask_dir = os.path.join(data_base_dir, "articles_full_newsmep_ent_by_count")
+        self.img_dir = os.path.join(data_base_dir, "images_processed")
+        self.tokenizer = tokenizer
+        self.use_clip_tokenizer = use_clip_tokenizer
+        self.max_len = max_article_len
+        self.transform = transform
+        self.entity_token_start = entity_token_start
+        self.entity_token_end = entity_token_end
+        self.hash_ids = [*data_dict.keys()]
+        self.max_ner_type_len = max_ner_type_len
+        self.max_ner_type_len_gt = max_ner_type_len_gt
 
-        # ---- đường dẫn cố định theo folder bạn đưa ----
-        self.dir_face   = os.path.join(base_dir, "faces")
-        self.dir_obj    = os.path.join(base_dir, "objects")
-        self.dir_mask   = os.path.join(base_dir, "article_all_ent_by_count_dir", type)
-        self.dir_img    = "/data/npl/ICEK/Wikipedia/images"
+        self.retrieved_sent=retrieved_sent
 
-        self.keys  = list(self.meta.keys())
-        # token id động
-        self.person_id  = self.tok.convert_tokens_to_ids("<PERSON>")
-
-    # --------------------------------------------------
-
-    def _load_npy(self, path, expected_dim):
-        # Trả về tensor ones nếu thiếu file hoặc sai kích thước
-        if not path or not os.path.isfile(path):
-            return np.ones((1, expected_dim), dtype=np.float32)
-
-        emb = np.load(path)
-        # Nếu shape không khớp, thay bằng tensor mặc định
-        if emb.ndim != 2 or emb.shape[1] != expected_dim:
-            print(f"[WARN] {path} có shape {emb.shape}, mong đợi (*, {expected_dim}). "
-                "Dùng padding mặc định.")
-            return np.ones((1, expected_dim), dtype=np.float32)
-        return emb
-
-
-    def __getitem__(self, idx):
-        max_retry = 10                                   # tránh vòng lặp vô hạn
-        for _ in range(max_retry):
-            hid  = self.keys[idx]
-            item      = self.meta[hid]
-            try:
-        
-     
-            # ---------- ẢNH ----------
-            
-                img_path  = os.path.join(self.dir_img, f"{str(hid).zfill(10)}.jpg")
-                img_pil  = safe_open_resize(img_path)
-                if img_pil is None:                         
-                  
-                    img_pil = Image.new("RGB", (224, 224), color=(127, 127, 127))
-
-                img_tensor = self.tr(img_pil).unsqueeze(0)  
-                # img_tensor= self.tr(Image.open(img_path).convert("RGB")).unsqueeze(0)
-
-                # ---------- Face & Obj ----------
-                face_emb = self._load_npy(item.get("face_emb_dir"), expected_dim=512)
-                obj_emb  = self._load_npy(item.get("obj_emb_dir"),  expected_dim=1000)
-
-                # ---------- Văn bản ----------
-                article  = item["sents_byclip"].replace("\n\n", " ")
-                caption  = item["caption"]
-
-                names          = item["names"]
-                org_norp       = item["org_norp"]
-                gpe_loc        = item["gpe_loc"]
-                names_art      = item["names_art"]
-                org_norp_art   = item["org_norp_art"]
-                gpe_loc_art    = item["gpe_loc_art"]
-
-                # khử trùng lặp
-                def uniq(seq):                                                         
-                    out=[]
-                    for i, w in enumerate(seq):
-                        if any(w in others for others in seq[:i]+seq[i+1:]): continue
-                        out.append(w)
-                    return out
-                names_art_u  = uniq(names_art)
-                org_art_u    = uniq(org_norp_art)
-                loc_art_u    = uniq(gpe_loc_art)
-
-                org_loc_art  = org_art_u + loc_art_u
-                org_loc_cap  = org_norp + gpe_loc
-                all_gt_ner   = names + org_loc_cap
-
-                # ---------- Token hoá ----------
-                concat_gt    = " ".join(all_gt_ner) if all_gt_ner else "<NONAME>"
-                gt_ner_ids   = self.tok(concat_gt, max_length=self.max_ent_gt,
-                                        truncation=True, padding="max_length",
-                                        return_tensors="pt")["input_ids"]
-
-                art_ids      = self.tok(article, max_length=self.max_article,
-                                        truncation=True, padding=True,
-                                        return_tensors="pt")["input_ids"]
-
-            
-                with open(os.path.join(self.dir_mask, f"{hid}.json")) as f:
-                    mask_ids = torch.LongTensor(json.load(f)["input_ids"])   # 1-D tensor (L,)
-
-                # ---- CHỈNH Ở ĐÂY -------------------------------------------------
-                L = mask_ids.size(0)
-                if L > self.max_article:                 # quá dài  →  cắt bớt
-                    mask_ids = mask_ids[: self.max_article]
-
-                elif L < self.max_article:               # thiếu     →  pad thêm <pad>(=1)
-                    pad_len  = self.max_article - L
-                    pad_part = torch.ones(pad_len, dtype=torch.long)  # 1 = <pad>
-                    mask_ids = torch.cat([mask_ids, pad_part], dim=0)
-                # -----------------------------------------------------------------
-
-                art_mask_ids = mask_ids.unsqueeze(0)     # (1, max_article)
-
-                # ----- vị trí PERSON trong mask -----
-                person_pos = get_person_ids_position(
-                                art_mask_ids.squeeze(0).tolist(),
-                                person_token_id=self.person_id,
-                                article_max_length=self.max_article)
-
-                # caption ids
-                cap_ids   = self.tok(caption, max_length=100,
-                                    truncation=True, return_tensors="pt")["input_ids"]
-
-                cap_ids_clip = clip_tokenize([caption], context_length=77) \
-                            if self.clip else None
-
-                # entity id helper
-                # from utils_entity import make_new_entity_ids
-                names_art_ids, _ = make_new_entity_ids(article, names_art_u,
-                                                    self.tok, max_length=self.max_ent_len)
-                org_loc_art_ids, _ = make_new_entity_ids(article, org_loc_art,
-                                                        self.tok, max_length=self.max_ent_len)
-
-                names_flat, names_ids = make_new_entity_ids(caption, names,
-                                                            self.tok, max_length=self.max_ent_gt)
-                orgloc_flat, orgloc_ids = make_new_entity_ids(caption, org_loc_cap,
-                                                            self.tok, max_length=self.max_ent_gt)
-
-                # -------------- return --------------
-                return {
-                    "article":                article,
-                    "article_ids":            art_ids,
-                    "article_ner_mask_ids":   art_mask_ids.unsqueeze(0),   # (1, L)
-                    "caption":                caption,
-                    "caption_ids":            cap_ids,
-                    "caption_ids_clip":       cap_ids_clip,
-                    "names_art":              names_art_u,
-                    "org_norp_gpe_loc_art":   org_loc_art,
-                    "names_art_ids":          names_art_ids,
-                    "org_norp_gpe_loc_art_ids": org_loc_art_ids,
-                    "names":                  names,
-                    "org_norp_gpe_loc":       org_loc_cap,
-                    "names_ids":              names_ids,
-                    "org_norp_gpe_loc_ids":   orgloc_ids,
-                    "all_gt_ner":             all_gt_ner,
-                    "all_gt_ner_ids":         gt_ner_ids,
-                    "face_emb":               face_emb,
-                    "obj_emb":                obj_emb,
-                    "img_tensor":             img_tensor,
-                    "names_ids_flatten":      names_flat,
-                    "org_norp_gpe_loc_ids_flatten": orgloc_flat,
-                    "person_id_positions":    person_pos,
-                    "person_id_positions_cap": item["name_pos_cap"],
-                }
-            except FileNotFoundError as e:
-                import random
-                import warnings
-                warnings.warn(f"Thiếu file {e.filename}, skip sample {hid}")
-                # chọn một idx ngẫu nhiên khác để thử lại
-                idx = random.randint(0, len(self) - 1)
-        raise RuntimeError(f"Không tìm được sample hợp lệ sau {max_retry} lần thử")
+        self.person_token_id = person_token_id
     
+    def __getitem__(self, index):
+        hash_id = self.hash_ids[index]
+        img = Image.open(os.path.join(self.img_dir, f"{hash_id}.jpg")).convert('RGB')
+        if self.data_dict[hash_id]["face_emb_dir"] != []:
+            face_emb = np.load(os.path.join(self.face_dir, f"{hash_id}.npy"))
+            names = self.data_dict[hash_id]["names"]
+        else:
+            face_emb = np.array([[]])
+            names = []
+        
+        if self.data_dict[hash_id]["obj_emb_dir"] != []:
+            obj_emb = np.load(os.path.join(self.obj_dir, f"{hash_id}.npy"))
+        else:
+            obj_emb = np.array([[]])
+        
+        if self.retrieved_sent:
+            article = self.data_dict[hash_id]["sents_byclip"]
+        else:
+            with open(os.path.join(os.path.join(self.article_dir, f"{hash_id}.txt"))) as f:
+                # article = f.readlines()
+                article = f.read()
+        
+        # caption = self.data_dict[hash_id]["caption"]
+        caption = unidecode.unidecode(self.data_dict[hash_id]["caption"])
+        names = self.data_dict[hash_id]["names"]
+        org_norp = self.data_dict[hash_id]["org_norp"]
+        gpe_loc = self.data_dict[hash_id]["gpe_loc"]
+        names_art = self.data_dict[hash_id]["names_art"]
+        org_norp_art = self.data_dict[hash_id]["org_norp_art"]
+        gpe_loc_art = self.data_dict[hash_id]["gpe_loc_art"]
+        # article = preprocess_article(article)
+
+        # delete repetitive names
+        new_names_art_list = []
+        for i in range(len(names_art)):
+            if compare_ner(names_art[i], names_art[:i] + names_art[i+1:]):
+                continue
+            else:
+                new_names_art_list.append(names_art[i])
+
+
+        # delete repetitive orgs
+        new_org_norp_art_list = []
+        for i in range(len(org_norp_art)):
+            if compare_ner(org_norp_art[i], org_norp_art[:i] + org_norp_art[i+1:]):
+                continue
+            else:
+                new_org_norp_art_list.append(org_norp_art[i])
+        # delete repetitive gpe
+        new_gpe_loc_art_list = []
+        for i in range(len(gpe_loc_art)):
+            if compare_ner(gpe_loc_art[i], gpe_loc_art[:i] + gpe_loc_art[i+1:]):
+                continue
+            else:
+                new_gpe_loc_art_list.append(gpe_loc_art[i])
+        
+        new_org_norp_gpe_loc_art_list = [*new_org_norp_art_list, *new_gpe_loc_art_list]
+        org_norp_gpe_loc = [*org_norp, *gpe_loc]
+
+
+        all_gt_ner = names + org_norp + gpe_loc
+        # print(all_gt_ner)
+        concat_gt_ner = concat_ner(all_gt_ner, self.entity_token_start, self.entity_token_end)
+        # print(concat_gt_ner)
+        gt_ner_ids = self.tokenizer(concat_gt_ner, return_tensors="pt", padding='max_length', truncation=True, max_length=self.max_ner_type_len_gt)["input_ids"]
+        
+        article_ids = self.tokenizer(article, return_tensors="pt", truncation=True, padding=True,max_length=self.max_len)["input_ids"]
+
+        article_ner_mask_ids = torch.randn((1,512))
+
+
+        with open(os.path.join(self.article_ner_mask_dir, f"{hash_id}.json")) as f:
+            article_ner_mask_dict = json.load(f)
+
+        person_id_positions = get_person_ids_position(article_ner_mask_dict["input_ids"], person_token_id=self.person_token_id, article_max_length=self.max_len)
+        person_id_positions_cap = self.data_dict[hash_id]["name_pos_cap"]
+        
+        caption_ids = self.tokenizer(caption, return_tensors="pt", truncation=True,  max_length=100)["input_ids"]
+        if self.use_clip_tokenizer:
+            import clip
+            # caption_ids_clip = clip.tokenize(caption, context_length=100, truncate=True)
+            caption_ids_clip = clip.tokenize(caption, truncate=True)
+        else:
+            caption_ids_clip = None
+            
+        names_art_ids, _ = make_new_entity_ids(article, new_names_art_list, self.tokenizer, ent_separator=self.entity_token_start, max_length=self.max_ner_type_len)
+        # concat_names_art = concat_ner(new_names_art_list, self.entity_token_start, self.entity_token_end)
+        # names_art_ids = self.tokenizer(concat_names_art, return_tensors="pt", padding='max_length', truncation=True, max_length=self.max_ner_type_len)["input_ids"]
+        
+
+        names_ids_flatten, names_ids = make_new_entity_ids(caption, names, self.tokenizer, ent_separator=self.entity_token_start, max_length=self.max_ner_type_len_gt)
+
+        # names.append("<NONAME>")
+        # names_ids = self.tokenizer(names, truncation=True, padding='max_length', max_length=self.max_ner_type_len_gt)["input_ids"]
+        
+
+        org_norp_gpe_loc_art_ids, _ = make_new_entity_ids(article, new_org_norp_gpe_loc_art_list, self.tokenizer, ent_separator=self.entity_token_start, max_length=self.max_ner_type_len)
+        # concat_org_norp_gpe_loc_art = concat_ner(new_org_norp_gpe_loc_art_list, self.entity_token_start, self.entity_token_end)
+        # org_norp_gpe_loc_art_ids = self.tokenizer(concat_org_norp_gpe_loc_art, return_tensors="pt", padding='max_length', truncation=True, max_length=self.max_ner_type_len)["input_ids"]
+       
+
+        org_norp_gpe_loc_ids_flatten, org_norp_gpe_loc_ids = make_new_entity_ids(caption, org_norp_gpe_loc, self.tokenizer, ent_separator=self.entity_token_start, max_length=self.max_ner_type_len_gt)
+
+
+        # org_norp_gpe_loc.append("NOORG")
+        # org_norp_gpe_loc_ids = self.tokenizer(org_norp_gpe_loc, truncation=True, padding='max_length', max_length=self.max_ner_type_len_gt)["input_ids"]
+
+
+        img_tensor = self.transform(img).unsqueeze(0)
+
+        return {"article": article, "article_ids":article_ids, "article_ner_mask_ids":article_ner_mask_ids, "caption": caption, "caption_ids": caption_ids, "caption_ids_clip": caption_ids_clip, "names_art": new_names_art_list, "org_norp_gpe_loc_art": new_org_norp_gpe_loc_art_list, "names_art_ids": names_art_ids, "org_norp_gpe_loc_art_ids": org_norp_gpe_loc_art_ids, "names": names, "org_norp_gpe_loc": org_norp_gpe_loc, "names_ids": names_ids, "org_norp_gpe_loc_ids": org_norp_gpe_loc_ids, "all_gt_ner":all_gt_ner, "all_gt_ner_ids":gt_ner_ids, "face_emb":face_emb, "obj_emb":obj_emb, "img_tensor":img_tensor, "names_ids_flatten":names_ids_flatten, "org_norp_gpe_loc_ids_flatten":org_norp_gpe_loc_ids_flatten, "person_id_positions":person_id_positions, "person_id_positions_cap":person_id_positions_cap}
     def __len__(self):
-        return len(self.meta)
+        return len(self.data_dict)
+
+
+
+
 
 
 
@@ -966,7 +715,19 @@ def preprocess_article(article):
 
 
 
-def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
+def get_entities(doc):
+    entities = []
+    for ent in doc.ents:
+        if ent.label_ in ["PERSON", "ORG", "NORP", "GPE", "LOC"]:
+            entities.append({
+                'text': ent.text,
+                'label': ent.label_,
+                # 'tokens': [{'text': tok.text, 'pos': tok.pos_} for tok in ent],
+                "position": [ent.start, ent.end],
+            })
+    return entities
+
+def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list):
     # make dict for unique ners with format as: {"Bush": PERSON_1}
     person_count = 1 # total count of PERSON type entities
     org_count = 1 # total count of ORG type entities
@@ -978,26 +739,25 @@ def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
     for i, ent in enumerate(ent_list):
         if ent in unique_ner_dict.keys():
             new_ner_type_list.append(unique_ner_dict[ent])
-        
-        elif ent_type_list[i] == "PERSON" or ent_type_list[i] == "PER":
-            ner_type = "<PERSON>_" + f"{person_count}"
+        elif ent_type_list[i] == "PERSON":
+            ner_type = "<PERSON>" + f"_{person_count}"
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             person_count += 1
-        elif ent_type_list[i] in ["ORGANIZATION", "ORG", "NORP"]:
-            ner_type = "<ORG>_" + f"{org_count}"
+        elif ent_type_list[i] == "ORG" or ent_type_list[i] == "NORP":
+            ner_type = "<ORGNORP>" + f"_{org_count}"
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             org_count += 1
-        elif ent_type_list[i] in ["GPE", "LOC"]:
-            ner_type = "<LOC>_" + f"{gpe_count}"
+        elif ent_type_list[i] == "GPE" or ent_type_list[i] == "LOC":
+            ner_type = "<GPELOC>" + f"_{gpe_count}"
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             gpe_count += 1
         
     entities_type = {} # dict with ner labels replaced by "PERSON_i", "ORG_j", "GPE_k"
 
-    entities = get_entities(processed_doc, article_full)
+    entities = get_entities(processed_doc)
 
     for i, ent in enumerate(entities):
         entities_type[i] = ent
@@ -1045,6 +805,61 @@ def make_new_articles_all_ent(processed_doc, start_pos_list, ent_length_list, en
     return new_article, new_article_unique_ner
 
 
+
+def save_full_processed_articles_all_ent_by_count(data_dict, article_full_text_dir, article_all_ent_by_count_dir, article_all_ent_unique_by_count_dir, tokenizer):
+    # goodnews_data: dataset of GoodNewsDatasetFullTxt class
+
+    nlp = spacy.load("en_core_web_lg")
+    nlp.add_pipe("merge_entities") # all recognized entities are counted as one word, we will count the length of the entities using the tokenizer of our choice
+
+    for key in tqdm(data_dict.keys()):
+        with open(os.path.join(article_full_text_dir, f"{key}.txt")) as f:
+            article_full = f.read()
+        
+        processed_doc = nlp(article_full)
+        entities = get_entities(processed_doc)
+        
+        ent_list = [ entities[i]["text"] for i in range(len(entities)) ]
+        ent_type_list = [ entities[i]["label"] for i in range(len(entities)) ]
+        
+        entities_type, start_pos_list, _, _, _ = make_ner_dict_by_type(processed_doc, ent_list, ent_type_list)
+        # print(entities_type)
+        # ent_length_list = [len(tokenizer(ent)) for ent in ent_list]
+        ent_length_list = [len(tokenizer(ent)["input_ids"])-2 for ent in ent_list]
+        # print(ent_list)
+        # print(ent_length_list)
+        # new_article, new_article_unique_ner = make_new_articles_all_ent(processed_doc, start_pos_list, ent_length_list, entities_type)
+
+        # article_all_ent_by_count_out_dir = os.path.join(article_all_ent_by_count_dir, f"{key}.txt")
+        # article_all_ent_unique_by_count_out_dir = os.path.join(article_all_ent_unique_by_count_dir, f"{key}.txt")
+
+        # with open(article_all_ent_by_count_out_dir, "w", encoding="utf-8") as f:
+        #     f.write(new_article)
+        # with open(article_all_ent_unique_by_count_out_dir, "w", encoding="utf-8") as f:
+        #     f.write(new_article_unique_ner)
+        
+
+        article_ids_ner = make_new_article_ids_all_ent(article_full, ent_list, entities_type, tokenizer)
+        # print(article_ids_ner)
+        # input_ids_bart = torch.LongTensor(article_ids_ner)
+        # input_ids_bart = input_ids_bart.unsqueeze(0)
+        # print(input_ids_bart.size())
+        # from transformers import BartModel
+        # model = BartModel.from_pretrained("facebook/bart-base")
+        # model.resize_token_embeddings(len(tokenizer))
+        # print(model(input_ids=input_ids_bart))
+
+        article_all_ent_by_count_out_dir = os.path.join(article_all_ent_by_count_dir, f"{key}.json")
+        # article_all_ent_unique_by_count_out_dir = os.path.join(article_all_ent_unique_by_count_dir, f"{key}.txt")
+        if not os.path.isfile(article_all_ent_by_count_out_dir):
+            with open(article_all_ent_by_count_out_dir, "w", encoding="utf-8") as f:
+                json.dump(article_ids_ner, f)
+        # with open(article_all_ent_unique_by_count_out_dir, "w", encoding="utf-8") as f:
+            # f.write(new_article_unique_ner)
+        # print(len(tokenizer(article_full)["input_ids"]))
+        # # print(tokenizer(article_full)["input_ids"])
+        # print(len(article_ids_ner["input_ids"]))
+        # print(article_full)
 
 
 def make_new_article_ids_all_ent(article_full, ent_list, entities_type, tokenizer):
@@ -1100,8 +915,8 @@ def find_first_sublist(seq, sublist, start=0):
 
 
 def get_caption_with_ent_type(nlp, caption, tokenizer):
-    processed_doc = nlp.annotate_text(caption)
-    entities = get_entities(processed_doc, caption)
+    processed_doc = nlp(caption)
+    entities = get_entities(processed_doc)
         
     ent_list = [ entities[i]["text"] for i in range(len(entities)) ]
     ent_type_list = [ entities[i]["label"] for i in range(len(entities)) ]
@@ -1139,62 +954,55 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
         new_dict[key] = {}
         new_dict[key] = value
         _, caption_ids_ner = get_caption_with_ent_type(nlp, value["caption"], tokenizer)
-        position_list = get_person_ids_position(caption_ids_ner, person_token_id=40030, article_max_length=20, is_tgt_input=True)
+        position_list = get_person_ids_position(caption_ids_ner, person_token_id=50265, article_max_length=20, is_tgt_input=True)
 
         new_dict[key]["name_pos_cap"] = position_list
     return new_dict
 
 
 if __name__ == "__main__":
+    tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+    tokenizer.add_special_tokens({"additional_special_tokens":['<PERSON>', "<ORGNORP>", "<GPELOC>"]})
+
+    import spacy
+    nlp = spacy.load("en_core_web_lg")
+    nlp.add_pipe("merge_entities")
+
+
+    with open("/DATADIR/GoodNews/test_dict_newsmep_ent.json") as f:
+        test_dict_newsmep_ent = json.load(f)
     
-    py_vncorenlp.download_model(save_dir="/data2/npl/ICEK/VnCoreNLP")
-    nlp = py_vncorenlp.VnCoreNLP(
-        annotators=["wseg", "pos", "ner"],
-        save_dir="/data2/npl/ICEK/VnCoreNLP",
-        max_heap_size='-Xmx10g'
-    )
-    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+    # save_full_processed_articles_all_ent_by_count(test_dict_newsmep_ent, "/DATADIR/GoodNews/goodnews/articles_full", "/DATADIR/GoodNews/goodnews/articles_full_newsmep_ent_by_count", "/DATADIR/GoodNews/goodnews/articles_full_newsmep_ent_unique_by_count", tokenizer)
+    # # {"4fd299828eb7c8105d877504_0":{}}
+    # # {"4fd292e98eb7c8105d86c97a_0":{}}
 
-    tokenizer = AutoTokenizer.from_pretrained("/data/npl/ICEK/License-Plate-Detection-Pipeline-with-Experiment-Tracking/assets/bartpho-syllable")
-    model     = AutoModelForSeq2SeqLM.from_pretrained("/data/npl/ICEK/License-Plate-Detection-Pipeline-with-Experiment-Tracking/assets/bartpho-syllable")
-    SPECIAL_TOKENS = ['<PERSON>', '<ORG>', '<LOC>', '<NONAME>']
-    tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
-    PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
-    print('PERSON_ID: ',PERSON_ID)
-    model.resize_token_embeddings(len(tokenizer))
-    import json 
-    with open('/data/npl/ICEK/DATASET/content/vacnic/final/test_vacnic_final.json','r',encoding='utf-8') as f:
-        data_dict = json.load(f)
 
-    train_clip_transform = transforms.Compose([
-    transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.48145466, 0.4578275, 0.40821073],
-        std=[0.26862954, 0.26130258, 0.27577711]),
-    ])
-    from functools import partial
-    noname_id = tokenizer.convert_tokens_to_ids("<NONAME>")
-    print('noname_id: ',noname_id)
+    test_dict_newsmep_ent_new =  add_name_pos_list_to_dict(test_dict_newsmep_ent, nlp, tokenizer)
+
+    with open("/DATADIR/GoodNews/test_dict_newsmep_ent_cap_name_pos.json", "w") as f:
+        json.dump(test_dict_newsmep_ent_new, f)
+
+
+    with open("/DATADIR/GoodNews/val_dict_newsmep_ent.json") as f:
+        val_dict_newsmep_ent = json.load(f)
     
 
-    sample_ds = GoodNewsDictDatasetEntityTypeFixLenEntPos(
-        data_dict,
-        base_dir="/data/npl/ICEK/DATASET/content/vacnic",
-        tokenizer=tokenizer,
-        transform=train_clip_transform,
-        use_clip_tokenizer=True
-    )
-    dataloader = DataLoader(
-        sample_ds,
-        batch_size=4,
-        shuffle=True,
-        collate_fn=partial(collate_fn_goodnews_entity_type, noname_id=noname_id)
-    )
-    print(sample_ds[0].keys())           # đủ 23 khóa
-    b = next(iter(dataloader))
-    print(b["article_ids"].shape)        # (B, L)
-    print(len(b["names_art"]))           # batch list gốc của caption names
+    
+    # # save_full_processed_articles_all_ent_by_count(val_dict_newsmep_ent, "/DATADIR/GoodNews/goodnews/articles_full", "/DATADIR/GoodNews/goodnews/articles_full_newsmep_ent_by_count", "/DATADIR/GoodNews/goodnews/articles_full_newsmep_ent_unique_by_count", tokenizer)
+
+    val_dict_newsmep_ent_new =  add_name_pos_list_to_dict(val_dict_newsmep_ent, nlp, tokenizer)
+
+    with open("/DATADIR/GoodNews/val_dict_newsmep_ent_cap_name_pos.json", "w") as f:
+        json.dump(val_dict_newsmep_ent_new, f)
 
 
+    with open("/DATADIR/GoodNews/train_dict_newsmep_ent.json") as f:
+        train_dict_newsmep_ent = json.load(f)
+    
+    # # save_full_processed_articles_all_ent_by_count(train_dict_newsmep_ent, "/DATADIR/GoodNews/goodnews/articles_full", "/DATADIR/GoodNews/goodnews/articles_full_newsmep_ent_by_count", "/DATADIR/GoodNews/goodnews/articles_full_newsmep_ent_unique_by_count", tokenizer)
+
+
+    train_dict_newsmep_ent_new =  add_name_pos_list_to_dict(train_dict_newsmep_ent, nlp, tokenizer)
+
+    with open("/DATADIR/GoodNews/train_dict_newsmep_ent_cap_name_pos.json", "w") as f:
+        json.dump(train_dict_newsmep_ent_new, f)
