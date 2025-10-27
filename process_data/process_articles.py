@@ -7,12 +7,6 @@ from bisect import bisect_left
 import py_vncorenlp
 from typing import List, Dict, Tuple
 
-# LABEL_MAP = {
-#     "PER": "PER", "PERSON": "PER",
-#     "ORG": "ORG", "ORGANIZATION": "ORG", "NORP": "ORG",
-#     "LOC": "LOC", "GPE": "LOC", "LOCATION": "LOC"
-
-# }
 LABEL_MAP = {
     "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
     "ORG": "ORGANIZATION", "B-ORG": "ORGANIZATION", "I-ORG": "ORGANIZATION",
@@ -362,10 +356,11 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 
 
 if __name__ == "__main__":
-
+    print("[DEBUG] init")
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(r"Z:\DATN\model\vacnic_model\bartpho-syllable")
+    tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-syllable")
     tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORGANIZATION>", "<LOCATION>"]})
+    print("[DEBUG] Tokenizer loaded")
    
     PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
 
@@ -376,13 +371,13 @@ if __name__ == "__main__":
         max_heap_size='-Xmx10g'
     )
 
-    with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
+    with open(r'Z:\DATN\data\refined_data\demo2000.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\test"
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\demo2000"
     save_full_processed_articles_all_ent_by_count(
             data_dict=data_dict,
-            out_dir=OUT_DIR,
+            out_dir=OUT_DIR, 
             tokenizer=tokenizer,
             nlp=nlp)
 
