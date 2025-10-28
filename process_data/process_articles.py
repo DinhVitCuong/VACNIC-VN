@@ -14,103 +14,105 @@ LABEL_MAP = {
     "GPE": "GPE", "B-GPE": "GPE", "I-GPE": "GPE",
 }
 
-def is_abbreviation(entity):
-    """
-    Kiểm tra xem một chuỗi có phải viết tắt theo dạng A.B. hay không.
-    Pattern: A. B. (có thể thêm tên tiếp theo sau)
-    """
-    pattern = r'\b([A-Z]\.)+([A-Z][a-z]*)?\b'
-    return re.match(pattern, entity) is not None
+# def _vn_fold_char(ch: str) -> str:
+#     """Fold a single character: remove VN diacritics, map NBSP→space, đ/Đ→d/D."""
+#     if ch == '\u00A0':  # NBSP
+#         return ' '
+#     if ch == 'đ':
+#         return 'd'
+#     if ch == 'Đ':
+#         return 'D'
+#     # Decompose & drop combining marks (tone/diacritics)
+#     decomp = unicodedata.normalize('NFD', ch)
+#     base = ''.join(c for c in decomp if unicodedata.category(c) != 'Mn')
+#     return base
 
-def _vn_fold_char(ch: str) -> str:
-    """Fold a single character: remove VN diacritics, map NBSP→space, đ/Đ→d/D."""
-    if ch == '\u00A0':  # NBSP
-        return ' '
-    if ch == 'đ':
-        return 'd'
-    if ch == 'Đ':
-        return 'D'
-    # Decompose & drop combining marks (tone/diacritics)
-    decomp = unicodedata.normalize('NFD', ch)
-    base = ''.join(c for c in decomp if unicodedata.category(c) != 'Mn')
-    return base
+# def _build_normalized_text_and_map(text: str):
+#     """
+#     Return:
+#       norm_text: accent-insensitive, lowercase text (same length as number of kept chars)
+#       norm2orig: list mapping each index in norm_text -> original index in text
+#     Notes:
+#       - We DO NOT collapse spaces; we keep each original char (minus combining marks) 1:1 mapped.
+#       - Combining marks are dropped and produce no output char (so mapping stays clean).
+#     """
+#     norm_chars = []
+#     norm2orig = []
+#     for i, ch in enumerate(text):
+#         folded = _vn_fold_char(ch)
+#         if not folded:  # e.g., standalone combining mark
+#             continue
+#         # We only keep exactly one char per original char to keep mapping simple.
+#         # If folding returned multiple chars (very rare), take first.
+#         out_ch = folded[0]
+#         norm_chars.append(out_ch.lower())
+#         norm2orig.append(i)
+#     norm_text = ''.join(norm_chars)
+#     return norm_text, norm2orig
 
-def _build_normalized_text_and_map(text: str):
-    """
-    Return:
-      norm_text: accent-insensitive, lowercase text (same length as number of kept chars)
-      norm2orig: list mapping each index in norm_text -> original index in text
-    Notes:
-      - We DO NOT collapse spaces; we keep each original char (minus combining marks) 1:1 mapped.
-      - Combining marks are dropped and produce no output char (so mapping stays clean).
-    """
-    norm_chars = []
-    norm2orig = []
-    for i, ch in enumerate(text):
-        folded = _vn_fold_char(ch)
-        if not folded:  # e.g., standalone combining mark
-            continue
-        # We only keep exactly one char per original char to keep mapping simple.
-        # If folding returned multiple chars (very rare), take first.
-        out_ch = folded[0]
-        norm_chars.append(out_ch.lower())
-        norm2orig.append(i)
-    norm_text = ''.join(norm_chars)
-    return norm_text, norm2orig
-
-def _fold_token_to_pattern(tok: str) -> str:
-    """
-    Fold token like the text; build a regex that tolerates any run of whitespace between parts.
-    Example: 'hoà   bình' -> r'hoa\s+binh'
-    """
-    # Basic cleanup similar to your pipeline
-    tok = tok.replace('_', ' ').replace('\u00A0', ' ').strip("•").strip()
-    # Per-char fold (diacritics off, đ->d), then lowercase
-    folded = ''.join(_vn_fold_char(c) for c in tok).lower()
-    # Split on any whitespace and join with \s+ so it matches spaces/newlines/tabs
-    parts = re.split(r'\s+', folded.strip())
-    # Escape non-whitespace parts for regex
-    return r'\s+'.join(re.escape(p) for p in parts if p)
+# def _fold_token_to_pattern(tok: str) -> str:
+#     """
+#     Fold token like the text; build a regex that tolerates any run of whitespace between parts.
+#     Example: 'hoà   bình' -> r'hoa\s+binh'
+#     """
+#     # Basic cleanup similar to your pipeline
+#     tok = tok.replace('_', ' ').replace('\u00A0', ' ').strip("•").strip()
+#     # Per-char fold (diacritics off, đ->d), then lowercase
+#     folded = ''.join(_vn_fold_char(c) for c in tok).lower()
+#     # Split on any whitespace and join with \s+ so it matches spaces/newlines/tabs
+#     parts = re.split(r'\s+', folded.strip())
+#     # Escape non-whitespace parts for regex
+#     return r'\s+'.join(re.escape(p) for p in parts if p)
 
 def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
     """
     Accent-insensitive, whitespace-tolerant alignment.
     Returns (start_char, end_char) in ORIGINAL text for each token.
     """
-    norm_text, norm2orig = _build_normalized_text_and_map(text)
+    # norm_text, norm2orig = _build_normalized_text_and_map(text)
     offsets: List[Tuple[int, int]] = []
     n_cursor = 0  # cursor in normalized text
 
     for tok in tokens:
-        pat = _fold_token_to_pattern(tok)
-        if not pat:
-            # empty after folding; skip defensively
-            offsets.append((n_cursor, n_cursor))
-            continue
+        # pat = _fold_token_to_pattern(tok)
+        # if not pat:
+        #     # empty after folding; skip defensively
+        #     offsets.append((n_cursor, n_cursor))
+        #     continue
 
-        # Search from current normalized cursor
-        m = re.search(pat, norm_text[n_cursor:])
-        if not m:
-            # Fallback: try from the beginning (in case cursor got desynced)
-            m = re.search(pat, norm_text)
-        if not m:
-            # Helpful debug before failing
-            near = text[norm2orig[n_cursor]: norm2orig[min(len(norm2orig)-1, n_cursor+120)]]
-            raise ValueError(
-                f"Cannot align token '{tok}' (pattern '{pat}') near original index "
-                f"{norm2orig[n_cursor] if n_cursor < len(norm2orig) else len(text)}. "
-                f"Context: {near!r}"
-            )
+        # # Search from current normalized cursor
+        # m = re.search(pat, norm_text[n_cursor:])
+        # if not m:
+        #     # Fallback: try from the beginning (in case cursor got desynced)
+        #     m = re.search(pat, norm_text)
+        # if not m:
+        #     # Helpful debug before failing
+        #     near = text[norm2orig[n_cursor]: norm2orig[min(len(norm2orig)-1, n_cursor+120)]]
+        #     raise ValueError(
+        #         f"Cannot align token '{tok}' (pattern '{pat}') near original index "
+        #         f"{norm2orig[n_cursor] if n_cursor < len(norm2orig) else len(text)}. "
+        #         f"Context: {near!r}"
+        #     )
+        
+        # m = re.search(pat, norm_text[n_cursor:])
 
-        start_norm = (n_cursor + m.start()) if m.re is not None and m.string is norm_text else m.start()
-        end_norm   = (n_cursor + m.end())   if m.re is not None and m.string is norm_text else m.end()
+        # start_norm = (n_cursor + m.start()) if m.re is not None and m.string is norm_text else m.start()
+        # end_norm   = (n_cursor + m.end())   if m.re is not None and m.string is norm_text else m.end()
 
-        # Map normalized span back to original indices
-        start_orig = norm2orig[start_norm]
-        end_orig   = norm2orig[end_norm - 1] + 1  # exclusive
+        # # Map normalized span back to original indices
+        # start_orig = norm2orig[start_norm]
+        # end_orig   = norm2orig[end_norm - 1] + 1  # exclusive
 
-        offsets.append((start_orig, end_orig))
-        n_cursor = end_norm  # advance normalized cursor
+        # offsets.append((start_orig, end_orig))
+        # n_cursor = end_norm  # advance normalized cursor
+        
+        m = re.search(tok, text[n_cursor:])
+
+        start_index = (n_cursor + m.start()) if m.re is not None and m.string is text else m.start()
+        end_index   = (n_cursor + m.end())   if m.re is not None and m.string is text else m.end()
+
+        offsets.append((start_index, end_index))
+        n_cursor = end_index
 
     return offsets
 
@@ -201,10 +203,11 @@ def save_full_processed_articles_all_ent_by_count(
         # if(i%100==0):
         #     print(f"[PROCESSING] DONE {i}")
         if meta.get("paragraphs"):              
-            article_full = meta["paragraphs"].replace('\n\n',' ')
+            article_full = ". ".join(meta["paragraphs"])
         else:
             raise ValueError(f"{key} thiếu 'paragraphs'; "
                              "hãy thêm hoặc truyền đường dẫn txt.")
+        
         sentences = re.split(r'(?<=[\.!?])\s+', article_full.strip())
         if not sentences:
             return {}
@@ -215,7 +218,7 @@ def save_full_processed_articles_all_ent_by_count(
                 continue
             try:
                 annotated_text = nlp.annotate_text(sent)
-                print(f"[DEBUG] annotated_text: {annotated_text}")
+                # print(f"[DEBUG] annotated_text: {annotated_text}")
                 processed_text.append(annotated_text)
             except Exception as e:
                 print(f"Lỗi khi annotating text: {e}")
@@ -371,7 +374,7 @@ if __name__ == "__main__":
         max_heap_size='-Xmx10g'
     )
 
-    with open(r'Z:\DATN\data\refined_data\demo2000.json','r',encoding='utf-8') as f:
+    with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
     OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\demo20"
