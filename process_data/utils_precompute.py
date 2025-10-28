@@ -40,6 +40,7 @@ from torchvision.models import resnet152, ResNet152_Weights
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 from ultralytics import YOLO
 from typing import Optional, Tuple, List
+import py_vncorenlp
 
 Image.MAX_IMAGE_PIXELS = None
 SHARD_THRESHOLD = 3000
@@ -48,8 +49,16 @@ SHARD_SIZE = 2000
 def _rel_or_abs(path: str, base_dir: str, use_abs: bool = False) -> str:
     return path if (use_abs or os.path.isabs(path)) else os.path.relpath(path, start=base_dir)
 
-def setup_models(device: torch.device):
-
+def setup_models(device: torch.device, vncorenlp_path):
+    print("[DEBUG] SETTING UP MODELS")
+    # --- VnCoreNLP ---
+    py_vncorenlp.download_model(save_dir=vncorenlp_path)
+    vncore = py_vncorenlp.VnCoreNLP(
+        annotators=["wseg"],
+        save_dir=vncorenlp_path,
+        max_heap_size='-Xmx15g'
+    )
+    print("[DEBUG] LOADED VNCORENLP!")
     # --- Face detection + embedding ---
     mtcnn = MTCNN(keep_all=True, device=str(device))
     facenet = InceptionResnetV1(pretrained="vggface2").eval().to(device)
@@ -74,6 +83,7 @@ def setup_models(device: torch.device):
     ])
 
     return {
+        "vncore": vncore,
         "mtcnn": mtcnn,
         "facenet": facenet,
         "resnet": resnet,
@@ -99,7 +109,7 @@ def _pad_to_len(x: torch.Tensor, target_len: int) -> Tuple[torch.Tensor, torch.T
     return out, mask
 
 def extract_faces_emb(
-    img: Image.Image,
+    image_path: str,
     mtcnn,
     facenet,
     device: torch.device,
@@ -111,6 +121,7 @@ def extract_faces_emb(
       feats: [S, 512] float32 (CPU)
       mask:  [S] bool (True=PAD)
     """
+    img = Image.open(image_path).convert("RGB")
     with torch.no_grad():
         faces, probs = mtcnn(img, return_prob=True)
 

@@ -192,7 +192,7 @@ def save_full_processed_articles_all_ent_by_count(
     ):
     """
     Sinh file {hash_id}.json chứa 'input_ids' (article đã ẩn danh NER).
-    Nếu article text đã nằm trong JSON (trường 'sents_byclip') sẽ đọc trực tiếp,
+    Nếu article text đã nằm trong JSON (trường 'paragraphs') sẽ đọc trực tiếp,
     ngược lại sẽ mở file <article_full_text_dir>/<hash_id>.txt (tuỳ chọn).
     """
     os.makedirs(out_dir, exist_ok=True)
@@ -200,10 +200,10 @@ def save_full_processed_articles_all_ent_by_count(
     for key, meta in tqdm(data_dict.items(), desc="make NER masks"):
         # if(i%100==0):
         #     print(f"[PROCESSING] DONE {i}")
-        if meta.get("sents_byclip"):              
-            article_full = meta["sents_byclip"].replace('\n\n',' ')
+        if meta.get("paragraphs"):              
+            article_full = meta["paragraphs"].replace('\n\n',' ')
         else:
-            raise ValueError(f"{key} thiếu 'sents_byclip'; "
+            raise ValueError(f"{key} thiếu 'paragraphs'; "
                              "hãy thêm hoặc truyền đường dẫn txt.")
         sentences = re.split(r'(?<=[\.!?])\s+', article_full.strip())
         if not sentences:
@@ -367,14 +367,14 @@ if __name__ == "__main__":
     py_vncorenlp.download_model(save_dir=r"Z:\DATN\model\vacnic_model\VnCoreNLP")
     nlp = py_vncorenlp.VnCoreNLP(
         annotators=["wseg", "pos", "ner"],
-        save_dir="Z:\DATN\model\vacnic_model\VnCoreNLP",
+        save_dir=r"Z:\DATN\model\vacnic_model\VnCoreNLP",
         max_heap_size='-Xmx10g'
     )
 
     with open(r'Z:\DATN\data\refined_data\demo2000.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\demo2000"
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\demo20"
     save_full_processed_articles_all_ent_by_count(
             data_dict=data_dict,
             out_dir=OUT_DIR, 

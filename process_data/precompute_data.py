@@ -3,7 +3,7 @@ import os
 from collections import defaultdict
 import re
 import numpy as np
-from extract_face_object import extract_faces_emb, extract_objects_emb, setup_models
+from utils_precompute import extract_faces_emb, extract_objects_emb, setup_models
 from tqdm import tqdm
 import py_vncorenlp
 import logging  # Added for better error handling
@@ -106,7 +106,7 @@ def find_name_positions(caption, names):
             start = caption.find(name, end)
     return positions
 
-def process_dataset(input_json_path, output_json_path, vncore):
+def process_dataset(input_json_path, output_json_path, vncore, models):
     """
     Read data from input_json_path, process only new entries, and update output_json_path.
     """
@@ -126,6 +126,10 @@ def process_dataset(input_json_path, output_json_path, vncore):
         data = json.load(f)
 
     processed_count = 0
+    mtcnn = models["mtcnn"]; facenet = models["facenet"]; resnet = models["resnet"]
+    resnet_object = models["resnet_object"]; yolo = models["yolo"]; preprocess = models["preprocess"]
+    device = models["device"]; vncore = models["vncore"]
+
     for hash_id, content in tqdm(data.items(), desc="Processing dataset"):
         # Skip if already processed
         if hash_id in new_data:
@@ -134,17 +138,16 @@ def process_dataset(input_json_path, output_json_path, vncore):
         try:
             new_entry = {}
             img_id = content["image_path"].split("images/")[-1]
-            image_path = f"/data2/npl/ICEK/Wikipedia/images_resized/{img_id}"
-            image_url = ""
+            image_path = fr"Z:\DATN\data\refined_data\images_resized\{img_id}"
 
             # Extract faces
-            faces_embbed, _ = extract_faces_emb(image_path, image_url)
+            faces_embbed, _ = extract_faces_emb(image_path, mtcnn, facenet, device)
             face_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/faces", f"{hash_id}.npy")
             np.save(face_emb_path, faces_embbed)
             new_entry["face_emb_dir"] = face_emb_path
 
             # Extract objects
-            objects_embbed, _ = extract_objects_emb(image_path, image_url)
+            objects_embbed, _ = extract_objects_emb(image_path, yolo, resnet_object, preprocess, device)
             object_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/objects", f"{hash_id}.npy")
             np.save(object_emb_path, objects_embbed)
             new_entry["obj_emb_dir"] = object_emb_path
@@ -228,5 +231,8 @@ if __name__ == "__main__":
         (r"/data2/npl/ICEK/Wikipedia/content/ver4/test.json", r"/data2/npl/ICEK/vacnic/data/test.json"),
         (r"/data2/npl/ICEK/Wikipedia/content/ver4/train.json", r"/data2/npl/ICEK/vacnic/data/train.json"),
     ]
+    device="cuda"
+    vncore_path = r"Z:\DATN\model\vacnic_model\VnCoreNLP"
+    models = setup_models(device, vncore_path)
     for input_json, output_json in datasets:
         process_dataset(input_json, output_json, vncore)
