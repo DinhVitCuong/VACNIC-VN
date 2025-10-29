@@ -34,30 +34,24 @@ import os
 from typing import Tuple, List
 import torch
 from PIL import Image
+from collections import defaultdict
+import re
 import torch.nn as nn
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from torchvision.models import resnet152, ResNet152_Weights
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+from torchvision.transforms import Compose, ToTensor, Normalize
 from ultralytics import YOLO
 from typing import Optional, Tuple, List
-import py_vncorenlp
+from vncore_singleton import get_vncore
 
 Image.MAX_IMAGE_PIXELS = None
 SHARD_THRESHOLD = 3000
 SHARD_SIZE = 2000
 
-def _rel_or_abs(path: str, base_dir: str, use_abs: bool = False) -> str:
-    return path if (use_abs or os.path.isabs(path)) else os.path.relpath(path, start=base_dir)
-
 def setup_models(device: torch.device, vncorenlp_path):
     print("[DEBUG] SETTING UP MODELS")
     # --- VnCoreNLP ---
-    py_vncorenlp.download_model(save_dir=vncorenlp_path)
-    vncore = py_vncorenlp.VnCoreNLP(
-        annotators=["wseg"],
-        save_dir=vncorenlp_path,
-        max_heap_size='-Xmx15g'
-    )
+    vncore = get_vncore(vncorenlp_path, with_heap=True)
     print("[DEBUG] LOADED VNCORENLP!")
     # --- Face detection + embedding ---
     mtcnn = MTCNN(keep_all=True, device=str(device))
@@ -92,7 +86,6 @@ def setup_models(device: torch.device, vncorenlp_path):
         "preprocess": preprocess,
         "device": device,
     }
-
 
 def _pad_to_len(x: torch.Tensor, target_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -175,3 +168,41 @@ def extract_objects_emb(
     if pad_to is not None:
         return _pad_to_len(feats, pad_to)
     return feats, torch.zeros(feats.size(0), dtype=torch.bool)
+
+def extract_entities(text: str,
+                     model
+                    ):
+    """
+    Chia text thành từng câu, chạy NER trên mỗi câu bằng VnCoreNLP,
+    rồi gộp kết quả (loại trùng). Nếu một câu lỗi hoặc không có entity,
+    nó sẽ được bỏ qua.
+    """
+    # Define label mapping for vncorenlp NER labels
+    label_mapping = {
+        "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
+        "ORG": "ORGANIZATION", "B-ORG": "ORGANIZATION", "I-ORG": "ORGANIZATION",
+        "LOC": "LOCATION", "B-LOC": "LOCATION", "I-LOC": "LOCATION",
+        "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
+    }
+    entities = defaultdict(set)
+    sentences = re.split(r'(?<=[\.!?])\s+', text.strip())
+    if not sentences:
+        return {}
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        try:
+            annotated_text = model.annotate_text(sent)
+        except Exception as e:
+            print(f"Lỗi khi annotating text: {e}")
+            return entities
+
+        for subsent in annotated_text:
+
+            for word in annotated_text[subsent]:
+                ent_type = label_mapping.get(word.get('nerLabel', ''), '')
+                ent_text = word.get('wordForm', '').strip()
+                if ent_type and ent_text:
+                    entities[ent_type].add(' '.join(ent_text.split('_')).strip("•"))
+    return {typ: sorted(vals) for typ, vals in entities.items()}

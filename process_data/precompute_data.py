@@ -1,9 +1,8 @@
 import json
 import os
-from collections import defaultdict
 import re
 import numpy as np
-from utils_precompute import extract_faces_emb, extract_objects_emb, setup_models
+from utils_precompute import  setup_models, extract_faces_emb, extract_objects_emb, extract_entities
 from tqdm import tqdm
 import py_vncorenlp
 import logging  # Added for better error handling
@@ -13,18 +12,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 print('Start process')
 
-# Initialize vncorenlp
-# vncore = py_vncorenlp.VnCoreNLP(annotators=["wseg", "pos", "ner"], save_dir="/data2/npl/ICEK/VnCoreNLP")
-py_vncorenlp.download_model(save_dir="/data2/npl/ICEK/VnCoreNLP")
-vncore = py_vncorenlp.VnCoreNLP(
-    annotators=["wseg", "pos", "ner", "parse"],
-    save_dir="/data2/npl/ICEK/VnCoreNLP",
-    max_heap_size='-Xmx10g'
-)
-
-def preprocess(text):
-    cleaned_text = re.sub(r'\(Ảnh.*?\)', '', text)
-    return cleaned_text
 
 def is_abbreviation(entity):
     """
@@ -33,64 +20,6 @@ def is_abbreviation(entity):
     """
     pattern = r'\b([A-Z]\.)+([A-Z][a-z]*)?\b'
     return re.match(pattern, entity) is not None
-
-def segment_text(text: str, model) -> str:
-    """Segment text using VnCoreNLP and join sentences with a separator"""
-    sentences = re.split(r'(?<=[\.!?])\s+', text.strip())
-    if not sentences:
-        return ""
-    segmented_sentences = []
-    for sent in sentences:
-        sent = sent.strip()
-        if not sent:
-            continue
-        try:
-            segmented = model.word_segment(sent)[0]
-            segmented_sentences.append(segmented)
-        except Exception as e:
-            logging.error(f"Error segmenting text: {e}")
-            segmented_sentences.append(sent)
-    return " <SEP> ".join(segmented_sentences)
-
-def extract_entities(text: str,
-                     model
-                    ):
-    """
-    Chia text thành từng câu, chạy NER trên mỗi câu bằng VnCoreNLP,
-    rồi gộp kết quả (loại trùng). Nếu một câu lỗi hoặc không có entity,
-    nó sẽ được bỏ qua.
-    """
-    # Define label mapping for vncorenlp NER labels
-    label_mapping = {
-        "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
-        "ORG": "ORGANIZATION", "B-ORG": "ORGANIZATION", "I-ORG": "ORGANIZATION",
-        "LOC": "LOCATION", "B-LOC": "LOCATION", "I-LOC": "LOCATION",
-        "GPE": "GPE", "B-GPE": "GPE", "I-GPE": "GPE",
-        "NORP": "NORP", "B-NORP": "NORP", "I-NORP": "NORP",
-        "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
-    }
-    entities = defaultdict(set)
-    sentences = re.split(r'(?<=[\.!?])\s+', text.strip())
-    if not sentences:
-        return {}
-    for sent in sentences:
-        sent = sent.strip()
-        if not sent:
-            continue
-        try:
-            annotated_text = model.annotate_text(sent)
-        except Exception as e:
-            print(f"Lỗi khi annotating text: {e}")
-            return entities
-
-        for subsent in annotated_text:
-
-            for word in annotated_text[subsent]:
-                ent_type = label_mapping.get(word.get('nerLabel', ''), '')
-                ent_text = word.get('wordForm', '').strip()
-                if ent_type and ent_text:
-                    entities[ent_type].add(' '.join(ent_text.split('_')).strip("•"))
-    return {typ: sorted(vals) for typ, vals in entities.items()}
 
 def find_name_positions(caption, names):
     """
@@ -106,7 +35,7 @@ def find_name_positions(caption, names):
             start = caption.find(name, end)
     return positions
 
-def process_dataset(input_json_path, output_json_path, vncore, models):
+def process_dataset(input_json_path, output_json_path, models):
     """
     Read data from input_json_path, process only new entries, and update output_json_path.
     """
@@ -142,19 +71,18 @@ def process_dataset(input_json_path, output_json_path, vncore, models):
 
             # Extract faces
             faces_embbed, _ = extract_faces_emb(image_path, mtcnn, facenet, device)
-            face_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/faces", f"{hash_id}.npy")
+            face_emb_path = os.path.join(r"Z:\DATN\data\vacnic_data\embedding\faces", f"{hash_id}.npy")
             np.save(face_emb_path, faces_embbed)
             new_entry["face_emb_dir"] = face_emb_path
 
             # Extract objects
             objects_embbed, _ = extract_objects_emb(image_path, yolo, resnet_object, preprocess, device)
-            object_emb_path = os.path.join("/data2/npl/ICEK/vacnic/data/embeddings/objects", f"{hash_id}.npy")
+            object_emb_path = os.path.join(r"Z:\DATN\data\vacnic_data\embedding\objects", f"{hash_id}.npy")
             np.save(object_emb_path, objects_embbed)
             new_entry["obj_emb_dir"] = object_emb_path
 
-            caption = content["caption"]
             list_sents_byclip = content.get("paragraphs", [])
-            sents_byclip = ' '.join(list_sents_byclip)
+            sents_byclip = '. '.join(list_sents_byclip)
 
             # Extract entities from context
             context_entities = extract_entities(sents_byclip, vncore)
@@ -163,6 +91,7 @@ def process_dataset(input_json_path, output_json_path, vncore, models):
             gpe_loc_art = list(context_entities.get("GPE", [])) + list(context_entities.get("LOCATION", []))
 
             # Extract entities from captions
+            caption = content["caption"]
             captions_text = caption
             caption_entities = extract_entities(captions_text, vncore)
             names_caption = list(caption_entities.get("PERSON", []))
@@ -226,13 +155,16 @@ def process_dataset(input_json_path, output_json_path, vncore, models):
 
 if __name__ == "__main__":
     datasets = [
-        (r"/data2/npl/ICEK/Wikipedia/content/ver4/demo10.json", r"/data2/npl/ICEK/vacnic/data/demo10.json"),
-        (r"/data2/npl/ICEK/Wikipedia/content/ver4/val.json", r"/data2/npl/ICEK/vacnic/data/val.json"),
-        (r"/data2/npl/ICEK/Wikipedia/content/ver4/test.json", r"/data2/npl/ICEK/vacnic/data/test.json"),
-        (r"/data2/npl/ICEK/Wikipedia/content/ver4/train.json", r"/data2/npl/ICEK/vacnic/data/train.json"),
+        (r"Z:\DATN\data\refined_data\demo20.json", r"Z:\DATN\data\vacnic_data\demo20.json")
     ]
+    # datasets = [
+    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/demo10.json", r"/data2/npl/ICEK/vacnic/data/demo10.json"),
+    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/val.json", r"/data2/npl/ICEK/vacnic/data/val.json"),
+    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/test.json", r"/data2/npl/ICEK/vacnic/data/test.json"),
+    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/train.json", r"/data2/npl/ICEK/vacnic/data/train.json"),
+    # ]
     device="cuda"
     vncore_path = r"Z:\DATN\model\vacnic_model\VnCoreNLP"
     models = setup_models(device, vncore_path)
     for input_json, output_json in datasets:
-        process_dataset(input_json, output_json, vncore)
+        process_dataset(input_json, output_json, models)

@@ -2,16 +2,14 @@ import os
 from tqdm import tqdm 
 import json 
 import re 
-import unicodedata
-from bisect import bisect_left
-import py_vncorenlp
-from typing import List, Dict, Tuple
+from typing import List, Tuple
+from vncore_singleton import get_vncore
 
 LABEL_MAP = {
     "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
     "ORG": "ORGANIZATION", "B-ORG": "ORGANIZATION", "I-ORG": "ORGANIZATION",
     "LOC": "LOCATION", "B-LOC": "LOCATION", "I-LOC": "LOCATION",
-    "GPE": "GPE", "B-GPE": "GPE", "I-GPE": "GPE",
+    "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
 }
 def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
     """
@@ -283,12 +281,7 @@ if __name__ == "__main__":
    
     PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
 
-    py_vncorenlp.download_model(save_dir=r"Z:\DATN\model\vacnic_model\VnCoreNLP")
-    nlp = py_vncorenlp.VnCoreNLP(
-        annotators=["wseg", "pos", "ner"],
-        save_dir=r"Z:\DATN\model\vacnic_model\VnCoreNLP",
-        max_heap_size='-Xmx10g'
-    )
+    vncore = get_vncore(r"Z:\DATN\model\vacnic_model\VnCoreNLP", with_heap=True)
 
     with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
