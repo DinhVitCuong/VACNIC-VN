@@ -276,7 +276,6 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 
 
 if __name__ == "__main__":
-    print("[DEBUG] init")
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-syllable")
     tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORGANIZATION>", "<LOCATION>"]})
@@ -294,7 +293,7 @@ if __name__ == "__main__":
     with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\demo20"
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\demo20"
     save_full_processed_articles_all_ent_by_count(
             data_dict=data_dict,
             out_dir=OUT_DIR, 
