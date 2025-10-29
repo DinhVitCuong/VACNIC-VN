@@ -281,7 +281,7 @@ if __name__ == "__main__":
    
     PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
 
-    vncore = get_vncore(r"Z:\DATN\model\vacnic_model\VnCoreNLP", with_heap=True)
+    nlp = get_vncore(r"Z:\DATN\model\vacnic_model\VnCoreNLP", with_heap=True)
 
     with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
