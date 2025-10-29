@@ -18,10 +18,11 @@ def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
     """
     offsets: List[Tuple[int, int]] = []
     n_cursor = 0  
-
     for tok in tokens:
-
-        m = re.search(tok, text[n_cursor:])
+        try:
+            m = re.search(tok, text[n_cursor:])
+        except:
+            print(f"[ERR] error searching:text = {text}\n \n tokens:{tokens}")
 
         start_index = (n_cursor + m.start()) if m.re is not None and m.string is text else m.start()
         end_index   = (n_cursor + m.end())   if m.re is not None and m.string is text else m.end()
@@ -30,6 +31,10 @@ def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
         n_cursor = end_index
 
     return offsets
+
+def _has_alnum(s: str) -> bool:
+    # keep tokens that have at least one letter/number (works with Unicode)
+    return any(ch.isalnum() for ch in s)
 
 def get_entities(doc, article_full):
     entities = []
@@ -40,7 +45,10 @@ def get_entities(doc, article_full):
                 ent_type = LABEL_MAP.get(word.get('nerLabel', ''), '')
                 ent_text = word.get('wordForm', '').strip()
                 if ent_type and ent_text:
-                    ent_text = (' '.join(ent_text.split('_')).strip("•"))
+                    raw_ent_text = (' '.join(ent_text.split('_')).strip("•"))
+                    ent_text = re.sub(r"[()\[\]{}'\"“”‘’]", "", raw_ent_text).strip()
+                    if not ent_type or not ent_text or not _has_alnum(ent_text):
+                        continue
                     tokens.append({
                         "text": ent_text,
                         "label": ent_type,          # luôn là PERON / ORGANIZATION / LOCATION
@@ -287,15 +295,15 @@ if __name__ == "__main__":
 
     nlp = get_vncore(r"Z:\DATN\model\vacnic_model\VnCoreNLP", with_heap=True)
 
-    with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
-        data_dict = json.load(f)
-    print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\demo20"
-    save_full_processed_articles_all_ent_by_count(
-            data_dict=data_dict,
-            out_dir=OUT_DIR, 
-            tokenizer=tokenizer,
-            nlp=nlp)
+    # with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # print("[DEBUG] DATA LOADED, PROCESSING")
+    # OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\demo20"
+    # save_full_processed_articles_all_ent_by_count(
+    #         data_dict=data_dict,
+    #         out_dir=OUT_DIR, 
+    #         tokenizer=tokenizer,
+    #         nlp=nlp)
 
     with open(r'Z:\DATN\data\refined_data\test.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)

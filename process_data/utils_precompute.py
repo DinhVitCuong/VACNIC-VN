@@ -169,6 +169,10 @@ def extract_objects_emb(
         return _pad_to_len(feats, pad_to)
     return feats, torch.zeros(feats.size(0), dtype=torch.bool)
 
+def _has_alnum(s: str) -> bool:
+    # keep tokens that have at least one letter/number (works with Unicode)
+    return any(ch.isalnum() for ch in s)
+
 def extract_entities(text: str,
                      model
                     ):
@@ -204,5 +208,9 @@ def extract_entities(text: str,
                 ent_type = label_mapping.get(word.get('nerLabel', ''), '')
                 ent_text = word.get('wordForm', '').strip()
                 if ent_type and ent_text:
-                    entities[ent_type].add(' '.join(ent_text.split('_')).strip("•"))
+                    raw_ent_text = (' '.join(ent_text.split('_')).strip("•"))
+                    refined_ent_text = re.sub(r"[()\[\]{}'\"“”‘’]", "", raw_ent_text).strip()
+                    if not ent_type or not ent_text or not _has_alnum(ent_text):
+                        continue
+                    entities[ent_type].add(refined_ent_text)
     return {typ: sorted(vals) for typ, vals in entities.items()}
