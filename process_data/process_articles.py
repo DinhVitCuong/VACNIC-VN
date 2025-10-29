@@ -23,7 +23,10 @@ def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
             m = re.search(tok, text[n_cursor:])
         except:
             print(f"[ERR] error searching:text = {text}\n \n tokens:{tokens}")
-
+        if m is None:
+            print(f"[WARN] invalid tok = {tok} \n \n text = {text}\n \n tokens:{tokens}")
+            offsets.append((-1, -1))
+            continue
         start_index = (n_cursor + m.start()) if m.re is not None and m.string is text else m.start()
         end_index   = (n_cursor + m.end())   if m.re is not None and m.string is text else m.end()
 
