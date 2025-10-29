@@ -9,7 +9,7 @@ LABEL_MAP = {
     "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
     "ORG": "ORGANIZATION", "B-ORG": "ORGANIZATION", "I-ORG": "ORGANIZATION",
     "LOC": "LOCATION", "B-LOC": "LOCATION", "I-LOC": "LOCATION",
-    "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
+    # "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
 }
 def align_tokens_to_text(text: str, tokens: List[str]) -> List[Tuple[int, int]]:
     """
@@ -83,11 +83,15 @@ def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             gpe_count += 1
+        # elif ent_type_list[i] in ["MISC"]:
+        #     ner_type = "<MISC>_" + f"{gpe_count}"
+        #     unique_ner_dict[ent] = ner_type
+        #     new_ner_type_list.append(ner_type)
+        #     gpe_count += 1
         
     entities_type = {} # dict with ner labels replaced by "PERSON_i", "ORG_j", "GPE_k"
 
     entities = get_entities(processed_doc, article_full)
-
     for i, ent in enumerate(entities):
         entities_type[i] = ent
         entities_type[i]["label"] = new_ner_type_list[i]
@@ -293,30 +297,30 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             nlp=nlp)
 
-    # with open('/data2/npl/ICEK/vacnic/data/test.json','r',encoding='utf-8') as f:
-    #     data_dict = json.load(f)
-    # print("[DEBUG] DATA LOADED, PROCESSING")
-    # OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/test"
-    # save_full_processed_articles_all_ent_by_count(
-    #         data_dict=data_dict,
-    #         out_dir=OUT_DIR,
-    #         tokenizer=tokenizer,
-    #         nlp=nlp)
+    with open(r'Z:\DATN\data\refined_data\test.json','r',encoding='utf-8') as f:
+        data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\test"
+    save_full_processed_articles_all_ent_by_count(
+            data_dict=data_dict,
+            out_dir=OUT_DIR,
+            tokenizer=tokenizer,
+            nlp=nlp)
 
-    # with open('/data2/npl/ICEK/vacnic/data/val.json','r',encoding='utf-8') as f:
-    #     data_dict = json.load(f)
-    # print("[DEBUG] DATA LOADED, PROCESSING")
-    # OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/val"
-    # save_full_processed_articles_all_ent_by_count(
-    #         data_dict=data_dict,
-    #         out_dir=OUT_DIR,
-    #         tokenizer=tokenizer,
-    #         nlp=nlp)
+    with open(r'Z:\DATN\data\vacnic_data\val.json','r',encoding='utf-8') as f:
+        data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\val"
+    save_full_processed_articles_all_ent_by_count(
+            data_dict=data_dict,
+            out_dir=OUT_DIR,
+            tokenizer=tokenizer,
+            nlp=nlp)
 
-    # with open('/data2/npl/ICEK/vacnic/data/train.json','r',encoding='utf-8') as f:
+    # with open(r'Z:\DATN\data\vacnic_data\train.json','r',encoding='utf-8') as f:
     #     data_dict = json.load(f)
     # print("[DEBUG] DATA LOADED, PROCESSING")
-    # OUT_DIR = "/data2/npl/ICEK/vacnic/data/embeddings/article_all_ent_by_count_dir/train"
+    # OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\train"
     # save_full_processed_articles_all_ent_by_count(
     #         data_dict=data_dict,
     #         out_dir=OUT_DIR,

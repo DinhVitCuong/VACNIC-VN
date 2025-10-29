@@ -155,7 +155,9 @@ def process_dataset(input_json_path, output_json_path, models):
 
 if __name__ == "__main__":
     datasets = [
-        (r"Z:\DATN\data\refined_data\demo20.json", r"Z:\DATN\data\vacnic_data\demo20.json")
+        (r"Z:\DATN\data\refined_data\demo20.json", r"Z:\DATN\data\vacnic_data\demo20.json"),
+        (r"Z:\DATN\data\refined_data\test.json", r"Z:\DATN\data\vacnic_data\test.json"),
+        (r"Z:\DATN\data\refined_data\val.json", r"Z:\DATN\data\vacnic_data\val.json")
     ]
     # datasets = [
     #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/demo10.json", r"/data2/npl/ICEK/vacnic/data/demo10.json"),

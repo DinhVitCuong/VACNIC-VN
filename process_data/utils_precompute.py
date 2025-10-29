@@ -182,7 +182,7 @@ def extract_entities(text: str,
         "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
         "ORG": "ORGANIZATION", "B-ORG": "ORGANIZATION", "I-ORG": "ORGANIZATION",
         "LOC": "LOCATION", "B-LOC": "LOCATION", "I-LOC": "LOCATION",
-        "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
+        # "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
     }
     entities = defaultdict(set)
     sentences = re.split(r'(?<=[\.!?])\s+', text.strip())
