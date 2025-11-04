@@ -1,10 +1,10 @@
-import torch.optim as optim
-
-import numpy as np
-from pycocoevalcap.bleu.bleu_scorer import BleuScorer
-from pycocoevalcap.cider.cider_scorer import CiderScorer
-from pycocoevalcap.meteor.meteor import Meteor
-from pycocoevalcap.rouge.rouge import Rouge
-
-import wandb
-import partial
+from transformers import CLIPModel, CLIPProcessor
+clip_path = r"Z:\DATN\model\vacnic_model\clip-ViT-B-32"
+clip_model = CLIPModel.from_pretrained(
+        clip_path,
+        local_files_only=True
+    ).to("cuda")
+clip_preprocess = CLIPProcessor.from_pretrained(
+        clip_path,
+        local_files_only=True
+    )

@@ -318,7 +318,7 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             nlp=nlp)
 
-    with open(r'Z:\DATN\data\vacnic_data\val.json','r',encoding='utf-8') as f:
+    with open(r'Z:\DATN\data\refined_data\val.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
     OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\val"

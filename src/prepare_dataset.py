@@ -521,7 +521,7 @@ class ViWikiDictDatasetEntityType(Dataset):
 
 
 
-class GoodNewsDictDatasetEntityTypeFixLenEntPos(Dataset):
+class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
     def __init__(self, data_dict, data_base_dir, tokenizer, use_clip_tokenizer=False, entity_token_start="no", entity_token_end="no", transform=None, max_article_len=512, max_ner_type_len=80, max_ner_type_len_gt=20, retrieved_sent=False, person_token_id=50265):
         super().__init__()
         self.data_dict = copy.deepcopy(data_dict)
