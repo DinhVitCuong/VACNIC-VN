@@ -526,7 +526,8 @@ if __name__ == "__main__":
     from pycocoevalcap.meteor.meteor import Meteor
     from pycocoevalcap.rouge.rouge import Rouge
 
-    import os, json, types, re, torch, clip, wandb
+    import os, json, types, re, torch
+    from transformers import CLIPModel, CLIPProcessor
     import numpy as np
     from functools import partial
     from tqdm import tqdm
@@ -588,9 +589,17 @@ if __name__ == "__main__":
         tokenizer = AutoTokenizer.from_pretrained(args.plm_type)
     
     if args.trained_clip == "no":
-        clip_model, clip_preprocess = clip.load(args.clip_type, device=DEVICE)
+        clip_path = r"Z:\DATN\model\vacnic_model\clip-ViT-B-32\0_CLIPModel"
+        clip_model = CLIPModel.from_pretrained(
+                clip_path,
+                local_files_only=True
+            ).to("cuda")
+        clip_preprocess = CLIPProcessor.from_pretrained(
+                clip_path,
+                local_files_only=True
+            )
 
-     
+    print(f"[DEBUG] DONE LOAD PRETRAINED MODEL")
     normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
                                      std=[0.26862954, 0.26130258, 0.27577711])
     # print(len(tokenizer))  # Tokenizer vocab size
@@ -618,6 +627,7 @@ if __name__ == "__main__":
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         normalize])
+    print(f"[DEBUG] DONE LOAD BART MODEL")
     
 
     tokenizer_dataset = AutoTokenizer.from_pretrained(args.plm_type)
@@ -639,11 +649,11 @@ if __name__ == "__main__":
                     max_ner_type_len_gt=args.max_ner_type_len_gt,
                     retrieved_sent=True)
     collate = partial(collate_fn_viwiki_entity_type, noname_id=noname_id,tokenizer=tokenizer)
-    train_data = build_dataset(args.train_json, "train")
+    # train_data = build_dataset(args.train_json, "train")
     val_data   = build_dataset(args.val_json,   "dev")
     test_data  = build_dataset(args.test_json,  "test")  
-    train_loader = DataLoader(train_data, args.train_batch_size,
-                        num_workers=args.num_workers, collate_fn=collate)
+    # train_loader = DataLoader(train_data, args.train_batch_size,
+    #                     num_workers=args.num_workers, collate_fn=collate)
 
     val_loader   = DataLoader(val_data,   args.val_batch_size,
                             shuffle=False, num_workers=args.num_workers,
@@ -652,7 +662,8 @@ if __name__ == "__main__":
     test_loader  = DataLoader(test_data,  args.test_batch_size,
                             shuffle=False, num_workers=args.num_workers,
                             collate_fn=collate)
-    logging.info({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
+    print(f"[DEBUG] val size: {len(val_data)}, test size = {len(test_data)}")
+    # logging.info({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
     # wandb.log({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
 
 

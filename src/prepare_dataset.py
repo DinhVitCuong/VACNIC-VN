@@ -12,7 +12,7 @@ from transformers import BartTokenizer, BartModel
 import json
 from torchvision import transforms
 import copy
-import unidecode
+# import unidecode
 
 
 def collate_fn_viwiki_entity_type(batch):
@@ -495,9 +495,15 @@ class ViWikiDictDatasetEntityType(Dataset):
         
         caption_ids = self.tokenizer(caption, return_tensors="pt", truncation=True,  max_length=100)["input_ids"]
         if self.use_clip_tokenizer:
-            import clip
-            # caption_ids_clip = clip.tokenize(caption, context_length=100, truncate=True)
-            caption_ids_clip = clip.tokenize(caption, truncate=True)
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(r"Z:\DATN\model\vacnic_model\clip-ViT-B-32-multilingual-v1")
+            caption_ids_clip = tokenizer(
+                caption,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                # max_length=77,  # typical CLIP context length
+            )
         else:
             caption_ids_clip = None
         # print(caption_ids)
@@ -566,8 +572,8 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
                 # article = f.readlines()
                 article = f.read()
         
-        # caption = self.data_dict[hash_id]["caption"]
-        caption = unidecode.unidecode(self.data_dict[hash_id]["caption"])
+        caption = self.data_dict[hash_id]["caption"]
+        # caption = unidecode.unidecode(self.data_dict[hash_id]["caption"])
         names = self.data_dict[hash_id]["names"]
         org_norp = self.data_dict[hash_id]["org_norp"]
         gpe_loc = self.data_dict[hash_id]["gpe_loc"]
@@ -623,9 +629,15 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         
         caption_ids = self.tokenizer(caption, return_tensors="pt", truncation=True,  max_length=100)["input_ids"]
         if self.use_clip_tokenizer:
-            import clip
-            # caption_ids_clip = clip.tokenize(caption, context_length=100, truncate=True)
-            caption_ids_clip = clip.tokenize(caption, truncate=True)
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(r"Z:\DATN\model\vacnic_model\clip-ViT-B-32-multilingual-v1")
+            caption_ids_clip = tokenizer(
+                caption,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                # max_length=77,  # typical CLIP context length
+            )
         else:
             caption_ids_clip = None
             
