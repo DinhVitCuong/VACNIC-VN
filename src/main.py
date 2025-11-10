@@ -41,8 +41,10 @@ parser.add_argument("--lr_clip", type=float, default = 5e-6)
 parser.add_argument("--weight_decay", type=float, default = 1e-5)
 parser.add_argument("--clip_norm", type=float, default = 0.1)
 
-parser.add_argument("--base_dir", type=str, default= "/data2/npl/ICEK/vacnic/data/embeddings")
-parser.add_argument("--out_dir", type=str, default= "/data2/npl/ICEK/vacnic/output/v1")
+parser.add_argument("--emb_dir", type=str, default= r"Z:\DATN\data\vacnic_data\embedding")
+parser.add_argument("--art_dir", type=str, default= r"Z:\DATN\data\vacnic_data\embedding")
+parser.add_argument("--img_dir", type=str, default= r"Z:\DATN\data\refined_data\images_resized")
+parser.add_argument("--out_dir", type=str, default= r"Z:\DATN\temp\vacnic_output\v1")
 
 parser.add_argument("--mapping_loss_type", type=str, default= "contrastive")
 
@@ -634,25 +636,28 @@ if __name__ == "__main__":
     tokenizer_dataset.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>", '<PERSON>', "<ORGNORP>", "<GPELOC>"]})
 
 
-    def build_dataset(json_path):
+    def build_dataset(json_path,split):
         with open(json_path, 'r', encoding='utf-8') as f:
             data_dict = json.load(f)
         return ViWikiDictDatasetEntityTypeFixLenEntPos(
                     data_dict,
-                    args.base_dir,
-                    tokenizer,               
+                    args.emb_dir,
+                    args.img_dir,
+                    args.art_dir,
+                    tokenizer_dataset,               
                     use_clip_tokenizer=True,
-                    # type=split,
                     transform=img_transform,
                     max_article_len=args.article_max_length,
                     max_ner_type_len=args.max_ner_type_len,
                     max_ner_type_len_gt=args.max_ner_type_len_gt,
                     retrieved_sent=True,
-                    person_token_id=40032)
+                    person_token_id=40032,
+                    split=split,
+                    )
     collate = partial(collate_fn_viwiki_entity_type, noname_id=noname_id,tokenizer=tokenizer)
-    train_data = build_dataset(args.train_json)
-    val_data   = build_dataset(args.val_json)
-    test_data  = build_dataset(args.test_json)  
+    train_data = build_dataset(args.train_json, "mini_train")
+    val_data   = build_dataset(args.val_json, "val")
+    test_data  = build_dataset(args.test_json, "test")  
     train_loader = DataLoader(train_data, args.train_batch_size,
                         num_workers=args.num_workers, collate_fn=collate)
 
@@ -667,12 +672,14 @@ if __name__ == "__main__":
     # logging.info({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
 
     model, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip = prep_for_training(model, len(train_data), DEVICE)
+    print(f"[DEBUG] DONE PREP FOR TRAINING")
 
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id).to(DEVICE)
     loss_img = torch.nn.CrossEntropyLoss()
     loss_txt = torch.nn.CrossEntropyLoss()
     loss_clip_bart = torch.nn.CrossEntropyLoss()
     loss_margin = torch.nn.HingeEmbeddingLoss(margin=args.margin)
+    print(f"[DEBUG] DONE LOSS, START TRAINING")
 
     train(bart_model, model, loss_margin, loss_fn, loss_img, loss_txt, loss_clip_bart, train_loader, val_loader, test_loader, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip, 'first', DEVICE)
     

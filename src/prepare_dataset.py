@@ -525,14 +525,14 @@ class ViWikiDictDatasetEntityType(Dataset):
 
 
 class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
-    def __init__(self, data_dict, data_base_dir, tokenizer, use_clip_tokenizer=False, entity_token_start="no", entity_token_end="no", transform=None, max_article_len=512, max_ner_type_len=80, max_ner_type_len_gt=20, retrieved_sent=False, person_token_id=50265):
+    def __init__(self, data_dict, emb_dir, image_dir, art_dir , tokenizer, use_clip_tokenizer=False, entity_token_start="no", entity_token_end="no", transform=None, max_article_len=512, max_ner_type_len=80, max_ner_type_len_gt=20, retrieved_sent=False, person_token_id=50265, split = None):
         super().__init__()
         self.data_dict = copy.deepcopy(data_dict)
-        self.face_dir = os.path.join(data_base_dir, "faces")
-        self.obj_dir = os.path.join(data_base_dir, "objects")
-        self.article_dir = os.path.join(data_base_dir, "articles_full")
-        self.article_ner_mask_dir = os.path.join(data_base_dir, "articles_full_newsmep_ent_by_count")
-        self.img_dir = os.path.join(data_base_dir, "images_processed")
+        self.face_dir = os.path.join(emb_dir, "faces")
+        self.obj_dir = os.path.join(emb_dir, "objects")
+        self.article_dir = os.path.join(art_dir, "articles_full")
+        self.article_ner_mask_dir = os.path.join(emb_dir, "article_all_ent_by_count_dir", split)
+        self.img_dir = image_dir
         self.tokenizer = tokenizer
         self.use_clip_tokenizer = use_clip_tokenizer
         self.max_len = max_article_len
@@ -542,14 +542,16 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         self.hash_ids = [*data_dict.keys()]
         self.max_ner_type_len = max_ner_type_len
         self.max_ner_type_len_gt = max_ner_type_len_gt
-
         self.retrieved_sent=retrieved_sent
 
         self.person_token_id = person_token_id
-    
+
     def __getitem__(self, index):
         hash_id = self.hash_ids[index]
-        img = Image.open(os.path.join(self.img_dir, f"{hash_id}.jpg")).convert('RGB')
+        # img_id = self.data_dict[hash_id]["image_path"].split("images/")[-1]
+        # img_path = f"/datastore/npl/ICEK/Wikipedia/images_resized/{img_id}"
+        img_path = self.data_dict[hash_id]["image_path"]
+        img = Image.open(img_path).convert("RGB")
         if self.data_dict[hash_id]["face_emb_dir"] != []:
             face_emb = np.load(os.path.join(self.face_dir, f"{hash_id}.npy"))
             names = self.data_dict[hash_id]["names"]
@@ -566,7 +568,6 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
             article = self.data_dict[hash_id]["sents_byclip"]
         else:
             with open(os.path.join(os.path.join(self.article_dir, f"{hash_id}.txt"))) as f:
-                # article = f.readlines()
                 article = f.read()
         
         caption = self.data_dict[hash_id]["caption"]
@@ -579,29 +580,40 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         gpe_loc_art = self.data_dict[hash_id]["gpe_loc_art"]
         # article = preprocess_article(article)
 
+        # # delete repetitive names
+        # new_names_art_list = []
+        # for i in range(len(names_art)):
+        #     if compare_ner(names_art[i], names_art[:i] + names_art[i+1:]):
+        #         continue
+        #     else:
+        #         new_names_art_list.append(names_art[i])
+        # # delete repetitive orgs
+        # new_org_norp_art_list = []
+        # for i in range(len(org_norp_art)):
+        #     if compare_ner(org_norp_art[i], org_norp_art[:i] + org_norp_art[i+1:]):
+        #         continue
+        #     else:
+        #         new_org_norp_art_list.append(org_norp_art[i])
+        # # delete repetitive gpe
+        # new_gpe_loc_art_list = []
+        # for i in range(len(gpe_loc_art)):
+        #     if compare_ner(gpe_loc_art[i], gpe_loc_art[:i] + gpe_loc_art[i+1:]):
+        #         continue
+        #     else:
+        #         new_gpe_loc_art_list.append(gpe_loc_art[i])  
+
+        def uniq(seq):                                                         
+                    out=[]
+                    for i, w in enumerate(seq):
+                        if any(w in others for others in seq[:i]+seq[i+1:]): continue
+                        out.append(w)
+                    return out     
         # delete repetitive names
-        new_names_art_list = []
-        for i in range(len(names_art)):
-            if compare_ner(names_art[i], names_art[:i] + names_art[i+1:]):
-                continue
-            else:
-                new_names_art_list.append(names_art[i])
-
-
+        new_names_art_list = uniq(names_art)
         # delete repetitive orgs
-        new_org_norp_art_list = []
-        for i in range(len(org_norp_art)):
-            if compare_ner(org_norp_art[i], org_norp_art[:i] + org_norp_art[i+1:]):
-                continue
-            else:
-                new_org_norp_art_list.append(org_norp_art[i])
+        new_org_norp_art_list = uniq(org_norp_art)
         # delete repetitive gpe
-        new_gpe_loc_art_list = []
-        for i in range(len(gpe_loc_art)):
-            if compare_ner(gpe_loc_art[i], gpe_loc_art[:i] + gpe_loc_art[i+1:]):
-                continue
-            else:
-                new_gpe_loc_art_list.append(gpe_loc_art[i])
+        new_gpe_loc_art_list = uniq(gpe_loc_art)
         
         new_org_norp_gpe_loc_art_list = [*new_org_norp_art_list, *new_gpe_loc_art_list]
         org_norp_gpe_loc = [*org_norp, *gpe_loc]
@@ -609,13 +621,29 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
 
         all_gt_ner = names + org_norp + gpe_loc
         # print(all_gt_ner)
-        concat_gt_ner = concat_ner(all_gt_ner, self.entity_token_start, self.entity_token_end)
+
+        # concat_gt_ner = concat_ner(all_gt_ner, self.entity_token_start, self.entity_token_end)
+        concat_gt_ner = " ".join(all_gt_ner) if all_gt_ner else "<NONAME>"
         # print(concat_gt_ner)
         gt_ner_ids = self.tokenizer(concat_gt_ner, return_tensors="pt", padding='max_length', truncation=True, max_length=self.max_ner_type_len_gt)["input_ids"]
         
         article_ids = self.tokenizer(article, return_tensors="pt", truncation=True, padding=True,max_length=self.max_len)["input_ids"]
 
-        article_ner_mask_ids = torch.randn((1,512))
+        #NEW article_ner_mask_ids 
+        L = mask_ids.size(0)
+        if L > self.max_article:                 # quá dài  →  cắt bớt
+            mask_ids = mask_ids[: self.max_article]
+
+        elif L < self.max_article:               # thiếu     →  pad thêm <pad>(=1)
+            pad_len  = self.max_article - L
+            pad_part = torch.ones(pad_len, dtype=torch.long)  # 1 = <pad>
+            mask_ids = torch.cat([mask_ids, pad_part], dim=0)
+        # -----------------------------------------------------------------
+
+        article_ner_mask_ids = mask_ids.unsqueeze(0)
+
+        #ORIGINAL article_ner_mask_ids
+        # article_ner_mask_ids = torch.randn((1,512))
 
 
         with open(os.path.join(self.article_ner_mask_dir, f"{hash_id}.json")) as f:
@@ -663,7 +691,29 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
 
         img_tensor = self.transform(img).unsqueeze(0)
 
-        return {"article": article, "article_ids":article_ids, "article_ner_mask_ids":article_ner_mask_ids, "caption": caption, "caption_ids": caption_ids, "caption_ids_clip": caption_ids_clip, "names_art": new_names_art_list, "org_norp_gpe_loc_art": new_org_norp_gpe_loc_art_list, "names_art_ids": names_art_ids, "org_norp_gpe_loc_art_ids": org_norp_gpe_loc_art_ids, "names": names, "org_norp_gpe_loc": org_norp_gpe_loc, "names_ids": names_ids, "org_norp_gpe_loc_ids": org_norp_gpe_loc_ids, "all_gt_ner":all_gt_ner, "all_gt_ner_ids":gt_ner_ids, "face_emb":face_emb, "obj_emb":obj_emb, "img_tensor":img_tensor, "names_ids_flatten":names_ids_flatten, "org_norp_gpe_loc_ids_flatten":org_norp_gpe_loc_ids_flatten, "person_id_positions":person_id_positions, "person_id_positions_cap":person_id_positions_cap}
+        return {
+            "article": article, 
+            "article_ids":article_ids, 
+            "article_ner_mask_ids":article_ner_mask_ids, 
+            "caption": caption, 
+            "caption_ids": caption_ids, 
+            "caption_ids_clip": caption_ids_clip, 
+            "names_art": new_names_art_list,
+            "org_norp_gpe_loc_art": new_org_norp_gpe_loc_art_list, 
+            "names_art_ids": names_art_ids, 
+            "org_norp_gpe_loc_art_ids": org_norp_gpe_loc_art_ids, 
+            "names": names, "org_norp_gpe_loc": org_norp_gpe_loc, 
+            "names_ids": names_ids, 
+            "org_norp_gpe_loc_ids": org_norp_gpe_loc_ids, 
+            "all_gt_ner":all_gt_ner, 
+            "all_gt_ner_ids":gt_ner_ids, 
+            "face_emb":face_emb, 
+            "obj_emb":obj_emb, 
+            "img_tensor":img_tensor, 
+            "names_ids_flatten":names_ids_flatten, 
+            "org_norp_gpe_loc_ids_flatten":org_norp_gpe_loc_ids_flatten, 
+            "person_id_positions":person_id_positions, 
+            "person_id_positions_cap":person_id_positions_cap}
     def __len__(self):
         return len(self.data_dict)
 
