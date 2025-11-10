@@ -85,15 +85,21 @@ def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
             new_ner_type_list.append(ner_type)
             person_count += 1
         elif ent_type_list[i] in ["ORGANIZATION", "ORG", "NORP"]:
-            ner_type = "<ORGANIZATION>_" + f"{org_count}"
+            ner_type = "<PERSON>_" + f"{org_count}"
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             org_count += 1
         elif ent_type_list[i] in ["GPE", "LOC","LOCATION"]:
-            ner_type = "<LOCATION>_" + f"{gpe_count}"
+            ner_type = "<GPELOC>_" + f"{gpe_count}"
             unique_ner_dict[ent] = ner_type
             new_ner_type_list.append(ner_type)
             gpe_count += 1
+        else:
+            ner_type = "<ENT>_" + f"{gpe_count}"
+            unique_ner_dict[ent] = ner_type
+            new_ner_type_list.append(ner_type)
+            ent_count += 1
+
         # elif ent_type_list[i] in ["MISC"]:
         #     ner_type = "<MISC>_" + f"{gpe_count}"
         #     unique_ner_dict[ent] = ner_type
@@ -111,7 +117,7 @@ def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
     start_pos_list = [sample["position"][0] for sample in entities_type.values()] # list of start positions for each entity
     # print(start_pos_list)
         
-    return entities_type, start_pos_list, person_count, org_count, gpe_count
+    return entities_type, start_pos_list, person_count, org_count, gpe_count, ent_count
 
 
 
@@ -291,7 +297,8 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 if __name__ == "__main__":
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-syllable")
-    tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORGANIZATION>", "<LOCATION>"]})
+    # tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORGANIZATION>", "<LOCATION>"]})
+    tokenizer.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>", '<PERSON>', "<ORGNORP>", "<GPELOC>"]})
     print("[DEBUG] Tokenizer loaded")
    
     PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
@@ -308,20 +315,20 @@ if __name__ == "__main__":
     #         tokenizer=tokenizer,
     #         nlp=nlp)
 
-    with open(r'Z:\DATN\data\refined_data\test.json','r',encoding='utf-8') as f:
-        data_dict = json.load(f)
-    print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\test"
-    save_full_processed_articles_all_ent_by_count(
-            data_dict=data_dict,
-            out_dir=OUT_DIR,
-            tokenizer=tokenizer,
-            nlp=nlp)
+    # with open(r'Z:\DATN\data\refined_data\test.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # print("[DEBUG] DATA LOADED, PROCESSING")
+    # OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\test"
+    # save_full_processed_articles_all_ent_by_count(
+    #         data_dict=data_dict,
+    #         out_dir=OUT_DIR,
+    #         tokenizer=tokenizer,
+    #         nlp=nlp)
 
-    with open(r'Z:\DATN\data\refined_data\val.json','r',encoding='utf-8') as f:
+    with open(r'Z:\DATN\data\refined_data\mini_train.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\val"
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\mini_train"
     save_full_processed_articles_all_ent_by_count(
             data_dict=data_dict,
             out_dir=OUT_DIR,
