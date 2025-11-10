@@ -1,10 +1,7 @@
 import os
 from re import I
-from charset_normalizer import detect
 import numpy as np
 from PIL import Image
-from torchvision.transforms import (CenterCrop, Compose, Normalize, Resize,
-                                    ToTensor)
 from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset, DataLoader

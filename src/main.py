@@ -14,13 +14,13 @@ parser.add_argument("--num_workers", type=int, default=4)
 # parser.add_argument("--test_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_test.json')
 
 # NEW DATASET
-parser.add_argument("--train_json", type=str, default='/data2/npl/ICEK/vacnic/data/mini_train.json')
-parser.add_argument("--val_json", type=str, default='/data2/npl/ICEK/vacnic/data/mini_val.json')
-parser.add_argument("--test_json", type=str, default='/data2/npl/ICEK/vacnic/data/mini_test.json')
+parser.add_argument("--train_json", type=str, default=r'Z:\DATN\data\vacnic_data\mini_train.json')
+parser.add_argument("--val_json", type=str, default=r'Z:\DATN\data\vacnic_data\val.json')
+parser.add_argument("--test_json", type=str, default=r'Z:\DATN\data\vacnic_data\test.json')
 
 parser.add_argument("--article_max_length", type=int, default=512)
 parser.add_argument("--caption_max_length", type=int, default=100)
-parser.add_argument("--plm_type", type=str, default="/data2/npl/ICEK/vacnic/bartpho-syllable-base")
+parser.add_argument("--plm_type", type=str, default=r"Z:\DATN\model\vacnic_model\bartpho-syllable")
 parser.add_argument("--clip_type", type=str, default="ViT-B/32")
 parser.add_argument("--ent_start_token", type=str, default="no")
 parser.add_argument("--ent_end_token", type=str, default="no")
@@ -634,7 +634,7 @@ if __name__ == "__main__":
     tokenizer_dataset.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>", '<PERSON>', "<ORGNORP>", "<GPELOC>"]})
 
 
-    def build_dataset(json_path, split):
+    def build_dataset(json_path):
         with open(json_path, 'r', encoding='utf-8') as f:
             data_dict = json.load(f)
         return ViWikiDictDatasetEntityTypeFixLenEntPos(
@@ -642,18 +642,19 @@ if __name__ == "__main__":
                     args.base_dir,
                     tokenizer,               
                     use_clip_tokenizer=True,
-                    type=split,
+                    # type=split,
                     transform=img_transform,
                     max_article_len=args.article_max_length,
                     max_ner_type_len=args.max_ner_type_len,
                     max_ner_type_len_gt=args.max_ner_type_len_gt,
-                    retrieved_sent=True)
+                    retrieved_sent=True,
+                    person_token_id=40032)
     collate = partial(collate_fn_viwiki_entity_type, noname_id=noname_id,tokenizer=tokenizer)
-    # train_data = build_dataset(args.train_json, "train")
-    val_data   = build_dataset(args.val_json,   "dev")
-    test_data  = build_dataset(args.test_json,  "test")  
-    # train_loader = DataLoader(train_data, args.train_batch_size,
-    #                     num_workers=args.num_workers, collate_fn=collate)
+    train_data = build_dataset(args.train_json)
+    val_data   = build_dataset(args.val_json)
+    test_data  = build_dataset(args.test_json)  
+    train_loader = DataLoader(train_data, args.train_batch_size,
+                        num_workers=args.num_workers, collate_fn=collate)
 
     val_loader   = DataLoader(val_data,   args.val_batch_size,
                             shuffle=False, num_workers=args.num_workers,
@@ -662,10 +663,8 @@ if __name__ == "__main__":
     test_loader  = DataLoader(test_data,  args.test_batch_size,
                             shuffle=False, num_workers=args.num_workers,
                             collate_fn=collate)
-    print(f"[DEBUG] val size: {len(val_data)}, test size = {len(test_data)}")
+    print(f"[DEBUG] train size: {len(train_data)}val size: {len(val_data)}, test size = {len(test_data)}")
     # logging.info({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
-    # wandb.log({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
-
 
     model, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip = prep_for_training(model, len(train_data), DEVICE)
 
