@@ -71,6 +71,7 @@ def make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, article_full):
     person_count = 1 # total count of PERSON type entities
     org_count = 1 # total count of ORG type entities
     gpe_count = 1 # total count of GPE type entities
+    ent_count = 1
 
     unique_ner_dict = {}
     new_ner_type_list = []
@@ -297,7 +298,6 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 if __name__ == "__main__":
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-syllable")
-    # tokenizer.add_special_tokens({"additional_special_tokens":["<PERSON>", "<ORGANIZATION>", "<LOCATION>"]})
     tokenizer.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>", '<PERSON>', "<ORGNORP>", "<GPELOC>"]})
     print("[DEBUG] Tokenizer loaded")
    
@@ -305,25 +305,35 @@ if __name__ == "__main__":
 
     nlp = get_vncore(r"Z:\DATN\model\vacnic_model\VnCoreNLP", with_heap=True)
 
-    # with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
-    #     data_dict = json.load(f)
-    # print("[DEBUG] DATA LOADED, PROCESSING")
-    # OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\demo20"
-    # save_full_processed_articles_all_ent_by_count(
-    #         data_dict=data_dict,
-    #         out_dir=OUT_DIR, 
-    #         tokenizer=tokenizer,
-    #         nlp=nlp)
+    with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
+        data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\demo20"
+    save_full_processed_articles_all_ent_by_count(
+            data_dict=data_dict,
+            out_dir=OUT_DIR, 
+            tokenizer=tokenizer,
+            nlp=nlp)
 
-    # with open(r'Z:\DATN\data\refined_data\test.json','r',encoding='utf-8') as f:
-    #     data_dict = json.load(f)
-    # print("[DEBUG] DATA LOADED, PROCESSING")
-    # OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\test"
-    # save_full_processed_articles_all_ent_by_count(
-    #         data_dict=data_dict,
-    #         out_dir=OUT_DIR,
-    #         tokenizer=tokenizer,
-    #         nlp=nlp)
+    with open(r'Z:\DATN\data\refined_data\test.json','r',encoding='utf-8') as f:
+        data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\test"
+    save_full_processed_articles_all_ent_by_count(
+            data_dict=data_dict,
+            out_dir=OUT_DIR,
+            tokenizer=tokenizer,
+            nlp=nlp)
+    
+    with open(r'Z:\DATN\data\refined_data\val.json','r',encoding='utf-8') as f:
+        data_dict = json.load(f)
+    print("[DEBUG] DATA LOADED, PROCESSING")
+    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\val"
+    save_full_processed_articles_all_ent_by_count(
+            data_dict=data_dict,
+            out_dir=OUT_DIR,
+            tokenizer=tokenizer,
+            nlp=nlp)
 
     with open(r'Z:\DATN\data\refined_data\mini_train.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
