@@ -163,27 +163,49 @@ def create_src_mask_bart(input_ids):
     return src_mask
 
 
-def extract_clip_img_feat(clip_model, x):
-    with torch.no_grad():
-        vit_backbone = clip_model.eval().visual
-        dtype = vit_backbone.conv1.weight.dtype
-        DEVICE = x.device
-        x = vit_backbone.conv1(x.type(dtype))
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
-        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
-        x = torch.cat([vit_backbone.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=DEVICE), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-        x = x + vit_backbone.positional_embedding.to(x.dtype)
-        x = vit_backbone.ln_pre(x)
+# def extract_clip_img_feat(clip_model, x):
+#     with torch.no_grad():
+#         vit_backbone = clip_model.eval().visual
+#         dtype = vit_backbone.conv1.weight.dtype
+#         DEVICE = x.device
+#         x = vit_backbone.conv1(x.type(dtype))
+#         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+#         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+#         x = torch.cat([vit_backbone.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=DEVICE), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+#         x = x + vit_backbone.positional_embedding.to(x.dtype)
+#         x = vit_backbone.ln_pre(x)
 
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = vit_backbone.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        # x = self.vit_backbone.ln_post(x[:, 0, :]) # [1, 50, 768] --> [1, 768] ([CLS])
-        x_cls = vit_backbone.ln_post(x[:, 0, :])
-        x_cls = x_cls.float()
-        x = vit_backbone.ln_post(x[:, 1: ,:])
-        x = x.float()
-    return x, x_cls
+#         x = x.permute(1, 0, 2)  # NLD -> LND
+#         x = vit_backbone.transformer(x)
+#         x = x.permute(1, 0, 2)  # LND -> NLD
+#         # x = self.vit_backbone.ln_post(x[:, 0, :]) # [1, 50, 768] --> [1, 768] ([CLS])
+#         x_cls = vit_backbone.ln_post(x[:, 0, :])
+#         x_cls = x_cls.float()
+#         x = vit_backbone.ln_post(x[:, 1: ,:])
+#         x = x.float()
+#     return x, x_cls
+
+def extract_clip_img_feat(clip_model, x):
+    """
+    x: [B, 3, H, W], already preprocessed (processor(... )["pixel_values"])
+    returns:
+        x_tokens: [B, num_patches, D]
+        x_cls:    [B, D]
+    """
+    with torch.no_grad():
+        clip_model.eval()
+
+        vision_model = clip_model.vision_model
+        dtype = next(vision_model.parameters()).dtype
+        x = x.to(dtype)
+
+        outputs = vision_model(pixel_values=x)
+
+        last_hidden = outputs.last_hidden_state       # [B, 1 + num_patches, D]
+        x_cls = outputs.pooler_output                 # [B, D]
+        x_tokens = last_hidden[:, 1:, :]              # [B, num_patches, D]
+
+        return x_tokens.float(), x_cls.float(), last_hidden.float()
 
 
 def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart, train_dataloader, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip, epoch, DEVICE):
@@ -617,7 +639,7 @@ if __name__ == "__main__":
             print(param)
 
     tokenizer.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>"]})
-    noname_id = tokenizer.convert_tokens_to_ids("<NONAME>")  
+    # noname_id = tokenizer.convert_tokens_to_ids("<NONAME>")  
     model.resize_token_embeddings(len(tokenizer))
 
     if args.perturb:
@@ -653,21 +675,21 @@ if __name__ == "__main__":
                     retrieved_sent=True,
                     person_token_id=40032,
                     split=split,
+                    clip_processor = clip_preprocess,
                     )
-    collate = partial(collate_fn_viwiki_entity_type, noname_id=noname_id,tokenizer=tokenizer)
     train_data = build_dataset(args.train_json, "mini_train")
     val_data   = build_dataset(args.val_json, "val")
     test_data  = build_dataset(args.test_json, "test")  
     train_loader = DataLoader(train_data, args.train_batch_size,
-                        num_workers=args.num_workers, collate_fn=collate)
+                        num_workers=args.num_workers, collate_fn=collate_fn_viwiki_entity_type)
 
     val_loader   = DataLoader(val_data,   args.val_batch_size,
                             shuffle=False, num_workers=args.num_workers,
-                            collate_fn=collate)
+                            collate_fn=collate_fn_viwiki_entity_type)
 
     test_loader  = DataLoader(test_data,  args.test_batch_size,
                             shuffle=False, num_workers=args.num_workers,
-                            collate_fn=collate)
+                            collate_fn=collate_fn_viwiki_entity_type)
     print(f"[DEBUG] train size: {len(train_data)}val size: {len(val_data)}, test size = {len(test_data)}")
     # logging.info({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
 

@@ -5,7 +5,7 @@ from PIL import Image
 from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset, DataLoader
-from transformers import BartTokenizer, BartModel
+from transformers import BartTokenizer, BartModel, CLIPProcessor
 import json
 from torchvision import transforms
 import copy
@@ -59,7 +59,6 @@ def collate_fn_viwiki_entity_type(batch):
         caption_id_list.append(caption_ids)
         if caption_ids_clip is not None:
             caption_id_clip_list.append(caption_ids_clip)
-
         names_art_list.append(names_art)
         names_art_ids_list.append(names_art_ids)
         org_norp_gpe_loc_art_list.append(org_norp_gpe_loc_art)
@@ -500,7 +499,7 @@ class ViWikiDictDatasetEntityType(Dataset):
                 padding=True,
                 truncation=True,
                 # max_length=77,  # typical CLIP context length
-            )
+            )["input_ids"]
         else:
             caption_ids_clip = None
         # print(caption_ids)
@@ -525,7 +524,7 @@ class ViWikiDictDatasetEntityType(Dataset):
 
 
 class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
-    def __init__(self, data_dict, emb_dir, image_dir, art_dir , tokenizer, use_clip_tokenizer=False, entity_token_start="no", entity_token_end="no", transform=None, max_article_len=512, max_ner_type_len=80, max_ner_type_len_gt=20, retrieved_sent=False, person_token_id=50265, split = None):
+    def __init__(self, data_dict, emb_dir, image_dir, art_dir , tokenizer, use_clip_tokenizer=False, entity_token_start="no", entity_token_end="no", transform=None, max_article_len=512, max_ner_type_len=80, max_ner_type_len_gt=20, retrieved_sent=False, person_token_id=50265, split = None, clip_processor=None, ):
         super().__init__()
         self.data_dict = copy.deepcopy(data_dict)
         self.face_dir = os.path.join(emb_dir, "faces")
@@ -537,6 +536,7 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         self.use_clip_tokenizer = use_clip_tokenizer
         self.max_len = max_article_len
         self.transform = transform
+        self.clip_processor = clip_processor 
         self.entity_token_start = entity_token_start
         self.entity_token_end = entity_token_end
         self.hash_ids = [*data_dict.keys()]
@@ -628,26 +628,30 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         gt_ner_ids = self.tokenizer(concat_gt_ner, return_tensors="pt", padding='max_length', truncation=True, max_length=self.max_ner_type_len_gt)["input_ids"]
         
         article_ids = self.tokenizer(article, return_tensors="pt", truncation=True, padding=True,max_length=self.max_len)["input_ids"]
+        with open(os.path.join(self.article_ner_mask_dir, f"{hash_id}.json")) as f:
+            article_ner_mask_dict = json.load(f)
 
+
+        art_mask_ids = torch.tensor(article_ner_mask_dict["input_ids"], dtype=torch.long)
         #NEW article_ner_mask_ids 
-        L = mask_ids.size(0)
-        if L > self.max_article:                 # quá dài  →  cắt bớt
-            mask_ids = mask_ids[: self.max_article]
+        L = art_mask_ids.size(0)
+        if L > self.max_len:                 # quá dài  →  cắt bớt
+            art_mask_ids = art_mask_ids[: self.max_len]
 
-        elif L < self.max_article:               # thiếu     →  pad thêm <pad>(=1)
-            pad_len  = self.max_article - L
+        elif L < self.max_len:               # thiếu     →  pad thêm <pad>(=1)
+            pad_len  = self.max_len - L
             pad_part = torch.ones(pad_len, dtype=torch.long)  # 1 = <pad>
-            mask_ids = torch.cat([mask_ids, pad_part], dim=0)
+            art_mask_ids = torch.cat([art_mask_ids, pad_part], dim=0)
         # -----------------------------------------------------------------
 
-        article_ner_mask_ids = mask_ids.unsqueeze(0)
+        article_ner_mask_ids = art_mask_ids.unsqueeze(0)
 
         #ORIGINAL article_ner_mask_ids
         # article_ner_mask_ids = torch.randn((1,512))
 
 
-        with open(os.path.join(self.article_ner_mask_dir, f"{hash_id}.json")) as f:
-            article_ner_mask_dict = json.load(f)
+        # with open(os.path.join(self.article_ner_mask_dir, f"{hash_id}.json")) as f:
+        #     article_ner_mask_dict = json.load(f)
 
         person_id_positions = get_person_ids_position(article_ner_mask_dict["input_ids"], person_token_id=self.person_token_id, article_max_length=self.max_len)
         person_id_positions_cap = self.data_dict[hash_id]["name_pos_cap"]
@@ -662,7 +666,7 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
                 padding=True,
                 truncation=True,
                 # max_length=77,  # typical CLIP context length
-            )
+            )["input_ids"]
         else:
             caption_ids_clip = None
             
@@ -689,7 +693,21 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         # org_norp_gpe_loc_ids = self.tokenizer(org_norp_gpe_loc, truncation=True, padding='max_length', max_length=self.max_ner_type_len_gt)["input_ids"]
 
 
-        img_tensor = self.transform(img).unsqueeze(0)
+        # img_tensor = self.transform(img).unsqueeze(0)
+        if self.clip_processor is not None:
+            # Use CLIP processor to get pixel_values: [1, 3, 224, 224]
+            pixel_values = self.clip_processor(
+                images=img,
+                return_tensors="pt"
+            )["pixel_values"].squeeze(0)   # [3, 224, 224]
+        else:
+            # Fallback to your custom transform if you want
+            if self.transform is not None:
+                pixel_values = self.transform(img).unsqueeze(0)   # expect [3, H, W]
+            else:
+                from torchvision import transforms
+                pixel_values = transforms.ToTensor()(img)
+        img_tensor = pixel_values
 
         return {
             "article": article, 
@@ -716,12 +734,6 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
             "person_id_positions_cap":person_id_positions_cap}
     def __len__(self):
         return len(self.data_dict)
-
-
-
-
-
-
 
 
 def concat_ner(ner_list, entity_token_start, entity_token_end):
