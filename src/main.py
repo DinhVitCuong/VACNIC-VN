@@ -245,8 +245,6 @@ def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt
         else:
             img_feat, img_feat_cls, _ = extract_clip_img_feat(model.clip_model, img_tensors)
 
-        
-        print(f"[DEBUG] img_feat_cls = {img_feat_cls.shape}, face_emb = {face_emb.shape}")
         # print("src", src_ids.size())
         if args.prompt_mlp_type == "clipcap":
             output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat_cls, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
