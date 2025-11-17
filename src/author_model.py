@@ -44,7 +44,6 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.models.bart.configuration_bart import BartConfig
-import clip
 from transformers import CLIPTokenizer
 
 logger = logging.get_logger(__name__)
@@ -695,7 +694,7 @@ class BartEncoderLayer(nn.Module):
                 hidden_states_img_ner_kv = hidden_states_img
 
             residual = hidden_states
-            attention_mask = attention_mask.cuda()
+            attention_mask = attention_mask.to('cuda')
             hidden_states, attn_weights, _ = self.self_attn(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -724,7 +723,7 @@ class BartEncoderLayer(nn.Module):
         
         else:
             residual = hidden_states
-            attention_mask = attention_mask.cuda()
+            attention_mask = attention_mask.to('cuda')
             hidden_states, attn_weights, _ = self.self_attn(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -852,7 +851,7 @@ class BartDecoderLayer(nn.Module):
 
             # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
             cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
-            encoder_attention_mask = encoder_attention_mask.cuda()
+            encoder_attention_mask = encoder_attention_mask.to('cuda')
             hidden_states, cross_attn_weights, cross_attn_present_key_value = self.encoder_attn(
                 hidden_states=hidden_states,
                 key_value_states=encoder_hidden_states,
@@ -1149,8 +1148,8 @@ class BartEncoder(BartPretrainedModel):
             # self.embed_tokens_ner = copy.deepcopy(self.embed_tokens)
             # self.embed_tokens_ner = nn.Embedding(50267, config.d_model, self.padding_idx)
             # self.embed_tokens_ner.weight.data[:50265, :] = self.embed_tokens.weight.data[:50265, :]
-            self.embed_tokens_ner = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
-            self.embed_tokens_ner.weight.data = self.embed_tokens.weight.data.clone()
+            self.embed_tokens_ner = nn.Embedding(40032, config.d_model, self.padding_idx)
+            self.embed_tokens_ner.weight.data[:40030, :] = self.embed_tokens.weight.data[:40030, :]
 
             self.embed_positions_ner = copy.deepcopy(self.embed_positions)
             
@@ -1240,7 +1239,7 @@ class BartEncoder(BartPretrainedModel):
             input_shape = inputs_embeds.size()[:-1]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
-        input_ids = input_ids.cuda()
+        input_ids = input_ids.to('cuda')
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
 
@@ -1267,7 +1266,7 @@ class BartEncoder(BartPretrainedModel):
             else:
                 face_name_mask_cross = _expand_mask(name_mask, inputs_embeds.dtype, tgt_len=self.max_ner_type_len_gt)
 
-            face_features = face_features.cuda()
+            face_features = face_features.to('cuda')
             hidden_states_face = self._linear_1(face_features)
         else:
             hidden_states_face = None
@@ -1552,7 +1551,7 @@ class BartDecoder(BartPretrainedModel):
 
         # past_key_values_length
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
-        input_ids = input_ids.cuda()
+        input_ids = input_ids.to('cuda')
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
         
