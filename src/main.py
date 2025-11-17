@@ -22,23 +22,23 @@ parser.add_argument("--article_max_length", type=int, default=512)
 parser.add_argument("--caption_max_length", type=int, default=100)
 parser.add_argument("--plm_type", type=str, default=r"Z:\DATN\model\vacnic_model\bartpho-syllable")
 parser.add_argument("--clip_type", type=str, default="ViT-B/32")
-parser.add_argument("--ent_start_token", type=str, default="no")
-parser.add_argument("--ent_end_token", type=str, default="no")
+parser.add_argument("--ent_start_token", type=str, default="<ENT>")
+parser.add_argument("--ent_end_token", type=str, default="<ENT>")
 parser.add_argument("--perturb", type=bool, default=True)
 
-parser.add_argument("--enc_fusion_layer",default=[0,1,2,3,4,5], type=int)
-parser.add_argument("--dim_common", type=int, default=768)
+parser.add_argument("--enc_fusion_layer",default=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], type=int)
+parser.add_argument("--dim_common", type=int, default=1024)
 
 parser.add_argument("--warmup_rate", type=float, default=0.05)
 parser.add_argument("--train_batch_size", type=int, default=32)
 parser.add_argument("--val_batch_size", type=int, default=1)
 parser.add_argument("--test_batch_size", type=int, default=1)
-parser.add_argument("--beam_size", type=int, default=1)
-parser.add_argument("--max_length", type=int, default=40)
-parser.add_argument("--num_epoch", type=int, default=1) #######################
-parser.add_argument("--lr_bart", type=float, default = 5e-5)
-parser.add_argument("--lr_clip", type=float, default = 5e-6)
-parser.add_argument("--weight_decay", type=float, default = 1e-5)
+parser.add_argument("--beam_size", type=int, default=5)
+parser.add_argument("--max_length", type=int, default=50)
+parser.add_argument("--num_epoch", type=int, default=16) #######################
+parser.add_argument("--lr_bart", type=float, default = 3e-5)
+parser.add_argument("--lr_clip", type=float, default = 1e-7)
+parser.add_argument("--weight_decay", type=float, default = 0.01)
 parser.add_argument("--clip_norm", type=float, default = 0.1)
 
 parser.add_argument("--emb_dir", type=str, default= r"Z:\DATN\data\vacnic_data\embedding")
@@ -49,16 +49,17 @@ parser.add_argument("--out_dir", type=str, default= r"Z:\DATN\temp\vacnic_output
 parser.add_argument("--mapping_loss_type", type=str, default= "contrastive")
 
 parser.add_argument("--trained_clip", type=str, default="no")
-parser.add_argument("--no_clip_loss", default=False, type=lambda x: (str(x).lower() == 'true'))
-parser.add_argument("--prompt_size", type=int, default=10)
+parser.add_argument("--no_clip_loss", default=True, type=lambda x: (str(x).lower() == 'true'))
+parser.add_argument("--prompt_size", type=int, default=20)
+parser.add_argument("--use_vis_cls", default=True, type=lambda x: (str(x).lower() == 'true'))
 
 parser.add_argument("--max_ner_type_len", type=int, default=80)
 parser.add_argument("--max_ner_type_len_gt", type=int, default=20)
 
-parser.add_argument("--freeze_clip", default=False, type=lambda x: (str(x).lower() == 'true'))
+parser.add_argument("--freeze_clip", default=True, type=lambda x: (str(x).lower() == 'true'))
 
 parser.add_argument("--prompt_mlp_type", type=str, default="clipcap")
-parser.add_argument("--map_size", nargs="+", type=int)
+parser.add_argument("--map_size", default= [196, 256, 64, 16], nargs="+", type=int)
 
 parser.add_argument("--no_mapping", default=False, type=lambda x: (str(x).lower() == 'true'))
 parser.add_argument("--mapping_loss_weight", type=float, default = 1.0)
@@ -66,7 +67,7 @@ parser.add_argument("--img_size", type=int, default=768)
 
 parser.add_argument("--only_image", default=False, type=lambda x: (str(x).lower() == 'true'))
 
-parser.add_argument("--use_secla", default=False, type=lambda x: (str(x).lower() == 'true'))
+parser.add_argument("--use_secla", default=True, type=lambda x: (str(x).lower() == 'true'))
 
 parser.add_argument("--num_sentences", type=int, default=8)
 
@@ -74,12 +75,12 @@ parser.add_argument("--offline_wandb", default=True, type=lambda x: (str(x).lowe
 
 # parser.add_argument("--perturb", default=False, type=lambda x: (str(x).lower() == 'true'))
 
-parser.add_argument("--no_clip_norm", default=False, type=lambda x: (str(x).lower() == 'true'))
+parser.add_argument("--no_clip_norm", default=True, type=lambda x: (str(x).lower() == 'true'))
 
 parser.add_argument("--init_attn_weight", default=False, type=lambda x: (str(x).lower() == 'true'))
 
 parser.add_argument("--margin", type=float, default=1.0)
-parser.add_argument("--alpha", type=float, default=1.0)
+parser.add_argument("--alpha", type=float, default=0.5)
 
 args = parser.parse_args()
 
@@ -163,27 +164,27 @@ def create_src_mask_bart(input_ids):
     return src_mask
 
 
-# def extract_clip_img_feat(clip_model, x):
-#     with torch.no_grad():
-#         vit_backbone = clip_model.eval().visual
-#         dtype = vit_backbone.conv1.weight.dtype
-#         DEVICE = x.device
-#         x = vit_backbone.conv1(x.type(dtype))
-#         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
-#         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
-#         x = torch.cat([vit_backbone.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=DEVICE), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-#         x = x + vit_backbone.positional_embedding.to(x.dtype)
-#         x = vit_backbone.ln_pre(x)
+def extract_clip_img_feat(clip_model, x):
+    with torch.no_grad():
+        vit_backbone = clip_model.eval().visual
+        dtype = vit_backbone.conv1.weight.dtype
+        DEVICE = x.device
+        x = vit_backbone.conv1(x.type(dtype))
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat([vit_backbone.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=DEVICE), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + vit_backbone.positional_embedding.to(x.dtype)
+        x = vit_backbone.ln_pre(x)
 
-#         x = x.permute(1, 0, 2)  # NLD -> LND
-#         x = vit_backbone.transformer(x)
-#         x = x.permute(1, 0, 2)  # LND -> NLD
-#         # x = self.vit_backbone.ln_post(x[:, 0, :]) # [1, 50, 768] --> [1, 768] ([CLS])
-#         x_cls = vit_backbone.ln_post(x[:, 0, :])
-#         x_cls = x_cls.float()
-#         x = vit_backbone.ln_post(x[:, 1: ,:])
-#         x = x.float()
-#     return x, x_cls
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = vit_backbone.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        # x = self.vit_backbone.ln_post(x[:, 0, :]) # [1, 50, 768] --> [1, 768] ([CLS])
+        x_cls = vit_backbone.ln_post(x[:, 0, :])
+        x_cls = x_cls.float()
+        x = vit_backbone.ln_post(x[:, 1: ,:])
+        x = x.float()
+    return x, x_cls
 
 def extract_clip_img_feat(clip_model, x):
     """
@@ -240,11 +241,12 @@ def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt
         names_cap_mask = create_src_mask_bart(names_ids_flatten)
 
         if "," in args.gpu_ids:
-            img_feat, img_feat_cls = extract_clip_img_feat(model.module.clip_model, img_tensors)
+            img_feat, img_feat_cls, _ = extract_clip_img_feat(model.module.clip_model, img_tensors)
         else:
-            img_feat, img_feat_cls = extract_clip_img_feat(model.clip_model, img_tensors)
+            img_feat, img_feat_cls, _ = extract_clip_img_feat(model.clip_model, img_tensors)
 
-
+        
+        print(f"[DEBUG] img_feat_cls = {img_feat_cls.shape}, face_emb = {face_emb.shape}")
         # print("src", src_ids.size())
         if args.prompt_mlp_type == "clipcap":
             output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat_cls, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
@@ -626,8 +628,7 @@ if __name__ == "__main__":
     print(f"[DEBUG] DONE LOAD PRETRAINED MODEL")
     normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
                                      std=[0.26862954, 0.26130258, 0.27577711])
-    # print(len(tokenizer))  # Tokenizer vocab size
-    # print(model.config.vocab_size) 
+
     model = BartForMultiModalGeneration.from_pretrained(args.plm_type, output_hidden_states=True, enc_fusion_layer=args.enc_fusion_layer, dim_common=args.dim_common, img_size=args.img_size, prompt_mlp_type=args.prompt_mlp_type, map_size=args.map_size, prompt_size=args.prompt_size, clip_model=clip_model, freeze_clip=args.freeze_clip, max_ner_type_len=args.max_ner_type_len, max_ner_type_len_gt=args.max_ner_type_len_gt, only_image=args.only_image, init_attn_weight=args.init_attn_weight)
 
     bart_model = BartForConditionalGeneration.from_pretrained(args.plm_type, output_hidden_states=True)
@@ -638,10 +639,22 @@ if __name__ == "__main__":
         if param.requires_grad:
             print(param)
 
-    tokenizer.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>"]})
+    
     # noname_id = tokenizer.convert_tokens_to_ids("<NONAME>")  
     model.resize_token_embeddings(len(tokenizer))
+    # 1. Check the config (less reliable)
+    print(f"Model config vocab size: {model.config.vocab_size}")
 
+    # 2. Check the actual embedding layer (most reliable)
+    actual_model_vocab_size = model.get_input_embeddings().num_embeddings
+    print(f"Model's ACTUAL embedding size: {actual_model_vocab_size}")
+
+    # You can also check the shape directly
+    # shape_0 = model.get_input_embeddings().weight.shape[0]
+    # print(f"Model embedding layer shape[0]: {shape_0}")
+
+    # This assertion should pass if everything is correct
+    assert len(tokenizer) == actual_model_vocab_size
     if args.perturb:
         bos_noise = torch.randn(1024)
         model.model.shared.weight.data[0] = model.model.shared.weight.data[0] + bos_noise
@@ -651,6 +664,8 @@ if __name__ == "__main__":
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         normalize])
+    print(len(tokenizer))  # Tokenizer vocab size
+    print(model.config.vocab_size) 
     print(f"[DEBUG] DONE LOAD BART MODEL")
     
 
@@ -676,6 +691,8 @@ if __name__ == "__main__":
                     person_token_id=40032,
                     split=split,
                     clip_processor = clip_preprocess,
+                    entity_token_start=args.ent_start_token, 
+                    entity_token_end=args.ent_end_token
                     )
     train_data = build_dataset(args.train_json, "mini_train")
     val_data   = build_dataset(args.val_json, "val")

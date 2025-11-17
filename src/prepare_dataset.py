@@ -100,9 +100,9 @@ def collate_fn_viwiki_entity_type(batch):
     names_art_ids_batch = pad_sequence(names_art_ids_list, 1, max_len=max_len_art_ids)
     org_norp_gpe_loc_art_ids_batch = pad_sequence(org_norp_gpe_loc_art_ids_list, 1, max_len=max_len_art_ids)
 
-    names_ids_batch = pad_sequence_from_list(names_ids_list, special_token_id=50266, bos_token_id=0, pad_token_id=1, eos_token_id=2,  max_len=max_len_name_ids)
+    names_ids_batch = pad_sequence_from_list(names_ids_list, special_token_id=40032, bos_token_id=0, pad_token_id=1, eos_token_id=2,  max_len=max_len_name_ids)
 
-    org_norp_gpe_loc_ids_batch = pad_sequence_from_list(org_norp_gpe_loc_ids_list, special_token_id=50266, bos_token_id=0, pad_token_id=1, eos_token_id=2, max_len=max_len_org_norp_gpe_loc_ids)
+    org_norp_gpe_loc_ids_batch = pad_sequence_from_list(org_norp_gpe_loc_ids_list, special_token_id=40032, bos_token_id=0, pad_token_id=1, eos_token_id=2, max_len=max_len_org_norp_gpe_loc_ids)
 
     all_gt_ner_ids_batch = pad_sequence(all_gt_ner_ids_list, 1)
 
