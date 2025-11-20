@@ -58,32 +58,10 @@ def setup_models(device: torch.device, vncorenlp_path):
     facenet = InceptionResnetV1(pretrained="vggface2").eval().to(device)
     print("[DEBUG] LOADED FaceNet!")
 
-    # --- Global / object image features ---
-    weights = ResNet152_Weights.IMAGENET1K_V1
-    base = resnet152(weights=weights).eval().to(device)
-    resnet = nn.Sequential(*list(base.children())[:-2]).eval().to(device)
-    resnet_object = nn.Sequential(*list(base.children())[:-1]).eval().to(device)
-    print("[DEBUG] LOADED ResNet152!")
-
-    # --- YOLOv8 ---
-    yolo = YOLO("yolov8m.pt")
-    yolo.fuse()
-    print("[DEBUG] LOADED YOLOv8!")
-
-    preprocess = Compose([
-        ToTensor(),
-        Normalize(mean=[0.485, 0.456, 0.406],
-                  std=[0.229, 0.224, 0.225])
-    ])
-
     return {
         "vncore": vncore,
         "mtcnn": mtcnn,
         "facenet": facenet,
-        "resnet": resnet,
-        "resnet_object": resnet_object,
-        "yolo": yolo,
-        "preprocess": preprocess,
         "device": device,
     }
 
@@ -133,38 +111,6 @@ def extract_faces_emb(
         embeds = facenet(face_tensors).float()  # [k,512] on device
     feats = embeds.detach().cpu().contiguous()
 
-    if pad_to is not None:
-        return _pad_to_len(feats, pad_to)
-    return feats, torch.zeros(feats.size(0), dtype=torch.bool)
-
-def extract_objects_emb(
-    image_path: str,
-    yolo, resnet, preprocess, device: torch.device,
-    conf: float = 0.3, iou: float = 0.45, max_det: int = 64,
-    pad_to: Optional[int] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Returns:
-      feats: [S, 2048] float32 (CPU)
-      mask:  [S] bool (True=PAD)
-    """
-    img = Image.open(image_path).convert("RGB")
-    with torch.no_grad():
-        results = yolo(image_path, conf=conf, iou=iou, max_det=max_det, verbose=False, show=False)
-
-    dets: List[torch.Tensor] = []
-    if results:
-        res = results[0]
-        xyxy = res.boxes.xyxy.cpu()
-        for i in range(len(xyxy)):
-            x1, y1, x2, y2 = map(float, xyxy[i].tolist())
-            crop = img.crop((x1, y1, x2, y2)).resize((224, 224))
-            t = preprocess(crop).unsqueeze(0).to(device)
-            with torch.no_grad():
-                feat = resnet(t).squeeze().detach().float()  # [2048]
-            dets.append(feat.cpu())
-
-    feats = torch.stack(dets, dim=0) if len(dets) else torch.zeros((0, 2048), dtype=torch.float32)
     if pad_to is not None:
         return _pad_to_len(feats, pad_to)
     return feats, torch.zeros(feats.size(0), dtype=torch.bool)

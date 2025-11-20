@@ -400,7 +400,6 @@ class ViWikiDictDatasetEntityType(Dataset):
         super().__init__()
         self.data_dict = copy.deepcopy(data_dict)
         self.face_dir = os.path.join(data_base_dir, "faces")
-        self.obj_dir = os.path.join(data_base_dir, "objects")
         self.article_dir = os.path.join(data_base_dir, "articles")
         self.article_ner_mask_dir = os.path.join(data_base_dir, "articles_full_pog_by_count")
         self.img_dir = os.path.join(data_base_dir, "images_processed")
@@ -528,7 +527,6 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         super().__init__()
         self.data_dict = copy.deepcopy(data_dict)
         self.face_dir = os.path.join(emb_dir, "faces")
-        self.obj_dir = os.path.join(emb_dir, "objects")
         self.article_dir = os.path.join(art_dir, "articles_full")
         self.article_ner_mask_dir = os.path.join(emb_dir, "article_all_ent_by_count_dir", split)
         self.img_dir = image_dir
@@ -559,10 +557,7 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
             face_emb = np.array([[]])
             names = []
         
-        if self.data_dict[hash_id]["obj_emb_dir"] != []:
-            obj_emb = np.load(os.path.join(self.obj_dir, f"{hash_id}.npy"))
-        else:
-            obj_emb = np.array([[]])
+        obj_emb = np.array([[]])
         
         if self.retrieved_sent:
             article = self.data_dict[hash_id]["sents_byclip"]

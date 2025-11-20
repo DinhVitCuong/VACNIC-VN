@@ -2,7 +2,7 @@ import json
 import os
 import re
 import numpy as np
-from utils_precompute import  setup_models, extract_faces_emb, extract_objects_emb, extract_entities
+from utils_precompute import  setup_models, extract_faces_emb, extract_entities
 from tqdm import tqdm
 import py_vncorenlp
 import logging  # Added for better error handling
@@ -55,8 +55,7 @@ def process_dataset(input_json_path, output_json_path, models):
         data = json.load(f)
 
     processed_count = 0
-    mtcnn = models["mtcnn"]; facenet = models["facenet"]; resnet = models["resnet"]
-    resnet_object = models["resnet_object"]; yolo = models["yolo"]; preprocess = models["preprocess"]
+    mtcnn = models["mtcnn"]; facenet = models["facenet"];
     device = models["device"]; vncore = models["vncore"]
 
     for hash_id, content in tqdm(data.items(), desc="Processing dataset"):
@@ -75,16 +74,10 @@ def process_dataset(input_json_path, output_json_path, models):
             np.save(face_emb_path, faces_embbed)
             new_entry["face_emb_dir"] = face_emb_path
 
-            # Extract objects
-            objects_embbed, _ = extract_objects_emb(image_path, yolo, resnet_object, preprocess, device)
-            object_emb_path = os.path.join(r"/datastore/npl/ICEK/vacnic/data/embedding/objects", f"{hash_id}.npy")
-            np.save(object_emb_path, objects_embbed)
-            new_entry["obj_emb_dir"] = object_emb_path
-
             list_sents_byclip = content.get("paragraphs", [])
             sents_byclip = '. '.join(list_sents_byclip)
 
-            # Extract entities from context
+            # Extract entities from     context
             context_entities = extract_entities(sents_byclip, vncore)
             names_art = list(context_entities.get("PERSON", []))
             org_norp_art = list(context_entities.get("ORGANIZATION", [])) + list(context_entities.get("NORP", []))
