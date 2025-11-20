@@ -298,7 +298,60 @@ def get_person_ids_position(article_ids_replaced, person_token_id=None, article_
     return position_list
 
 
-def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
+dict_map = {
+    "òa": "oà",
+    "Òa": "Oà",
+    "ÒA": "OÀ",
+    "óa": "oá",
+    "Óa": "Oá",
+    "ÓA": "OÁ",
+    "ỏa": "oả",
+    "Ỏa": "Oả",
+    "ỎA": "OẢ",
+    "õa": "oã",
+    "Õa": "Oã",
+    "ÕA": "OÃ",
+    "ọa": "oạ",
+    "Ọa": "Oạ",
+    "ỌA": "OẠ",
+    "òe": "oè",
+    "Òe": "Oè",
+    "ÒE": "OÈ",
+    "óe": "oé",
+    "Óe": "Oé",
+    "ÓE": "OÉ",
+    "ỏe": "oẻ",
+    "Ỏe": "Oẻ",
+    "ỎE": "OẺ",
+    "õe": "oẽ",
+    "Õe": "Oẽ",
+    "ÕE": "OẼ",
+    "ọe": "oẹ",
+    "Ọe": "Oẹ",
+    "ỌE": "OẸ",
+    "ùy": "uỳ",
+    "Ùy": "Uỳ",
+    "ÙY": "UỲ",
+    "úy": "uý",
+    "Úy": "Uý",
+    "ÚY": "UÝ",
+    "ủy": "uỷ",
+    "Ủy": "Uỷ",
+    "ỦY": "UỶ",
+    "ũy": "uỹ",
+    "Ũy": "Uỹ",
+    "ŨY": "UỸ",
+    "ụy": "uỵ",
+    "Ụy": "Uỵ",
+    "ỤY": "UỴ",
+    }
+
+def replace_all(text, dict_map):
+    for i, j in dict_map.items():
+        text = text.replace(i, j)
+    return text
+
+def add_name_pos_list_to_dict_and_normalize_tone(data_dict, nlp, tokenizer):
     new_dict = {}
     for key, value in tqdm(data_dict.items(), desc="adding 'name_pos_cap' into processed dict:"):
         new_dict[key] = {}
@@ -307,6 +360,10 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
         position_list = get_person_ids_position(caption_ids_ner, person_token_id=PERSON_ID, article_max_length=40, is_tgt_input=True)
 
         new_dict[key]["name_pos_cap"] = position_list
+
+        raw_article = new_dict[key]["sents_byclip"]
+        article = replace_all(raw_article, dict_map)
+        new_dict[key]["sents_byclip"] = article
     return new_dict
 
 
@@ -332,7 +389,7 @@ if __name__ == "__main__":
 
     with open (r'/datastore/npl/ICEK/vacnic/data/demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
-    new_data_dict =  add_name_pos_list_to_dict(data_dict, nlp, tokenizer)
+    new_data_dict =  add_name_pos_list_to_dict_and_normalize_tone(data_dict, nlp, tokenizer)
     with open(r'/datastore/npl/ICEK/vacnic/data/demo20.json', 'w', encoding='utf-8') as f:
         json.dump(new_data_dict, f, ensure_ascii=False, indent=4)
 

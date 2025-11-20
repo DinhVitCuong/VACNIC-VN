@@ -149,9 +149,9 @@ def process_dataset(input_json_path, output_json_path, models):
 if __name__ == "__main__":
 
     datasets = [
-        (r"/datastore/npl/ICEK/Wikipedia/content/ver5/demo20.json", r"/datastore/npl/ICEK/vacnic/data/demo20.json"),
-        (r"/datastore/npl/ICEK/Wikipedia/content/ver5/val.json", r"/datastore/npl/ICEK/vacnic/data/val.json"),
-        (r"/datastore/npl/ICEK/Wikipedia/content/ver5/test.json", r"/datastore/npl/ICEK/vacnic/data/test.json"),
+        # (r"/datastore/npl/ICEK/Wikipedia/content/ver5/demo20.json", r"/datastore/npl/ICEK/vacnic/data/demo20.json"),
+        # (r"/datastore/npl/ICEK/Wikipedia/content/ver5/val.json", r"/datastore/npl/ICEK/vacnic/data/val.json"),
+        # (r"/datastore/npl/ICEK/Wikipedia/content/ver5/test.json", r"/datastore/npl/ICEK/vacnic/data/test.json"),
         (r"/datastore/npl/ICEK/Wikipedia/content/ver5/train.json", r"/datastore/npl/ICEK/vacnic/data/train.json"),
     ]
     device="cuda"
