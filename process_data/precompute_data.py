@@ -67,17 +67,17 @@ def process_dataset(input_json_path, output_json_path, models):
         try:
             new_entry = {}
             img_id = content["image_path"].split("images/")[-1]
-            image_path = fr"Z:\DATN\data\refined_data\images_resized\{img_id}"
+            image_path = fr"/datastore/npl/ICEK/Wikipedia/images_resized_refine/{img_id}"
 
             # Extract faces
             faces_embbed, _ = extract_faces_emb(image_path, mtcnn, facenet, device)
-            face_emb_path = os.path.join(r"Z:\DATN\data\vacnic_data\embedding\faces", f"{hash_id}.npy")
+            face_emb_path = os.path.join(r"/datastore/npl/ICEK/vacnic/data/embedding/faces", f"{hash_id}.npy")
             np.save(face_emb_path, faces_embbed)
             new_entry["face_emb_dir"] = face_emb_path
 
             # Extract objects
             objects_embbed, _ = extract_objects_emb(image_path, yolo, resnet_object, preprocess, device)
-            object_emb_path = os.path.join(r"Z:\DATN\data\vacnic_data\embedding\objects", f"{hash_id}.npy")
+            object_emb_path = os.path.join(r"/datastore/npl/ICEK/vacnic/data/embedding/objects", f"{hash_id}.npy")
             np.save(object_emb_path, objects_embbed)
             new_entry["obj_emb_dir"] = object_emb_path
 
@@ -154,19 +154,15 @@ def process_dataset(input_json_path, output_json_path, models):
         logger.info(f"No new entries to process for {output_json_path}")
 
 if __name__ == "__main__":
+
     datasets = [
-        (r"Z:\DATN\data\refined_data\mini_train.json", r"Z:\DATN\data\vacnic_data\mini_train.json")
-        # (r"Z:\DATN\data\refined_data\test.json", r"Z:\DATN\data\vacnic_data\test.json"),
-        # (r"Z:\DATN\data\refined_data\val.json", r"Z:\DATN\data\vacnic_data\val.json")
+        (r"/datastore/npl/ICEK/Wikipedia/content/ver5/demo20.json", r"/datastore/npl/ICEK/vacnic/data/demo20.json"),
+        (r"/datastore/npl/ICEK/Wikipedia/content/ver5/val.json", r"/datastore/npl/ICEK/vacnic/data/val.json"),
+        (r"/datastore/npl/ICEK/Wikipedia/content/ver5/test.json", r"/datastore/npl/ICEK/vacnic/data/test.json"),
+        (r"/datastore/npl/ICEK/Wikipedia/content/ver5/train.json", r"/datastore/npl/ICEK/vacnic/data/train.json"),
     ]
-    # datasets = [
-    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/demo10.json", r"/data2/npl/ICEK/vacnic/data/demo10.json"),
-    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/val.json", r"/data2/npl/ICEK/vacnic/data/val.json"),
-    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/test.json", r"/data2/npl/ICEK/vacnic/data/test.json"),
-    #     (r"/data2/npl/ICEK/Wikipedia/content/ver4/train.json", r"/data2/npl/ICEK/vacnic/data/train.json"),
-    # ]
     device="cuda"
-    vncore_path = r"Z:\DATN\model\vacnic_model\VnCoreNLP"
+    vncore_path = r"/datastore/npl/ICEK/VnCoreNLP"
     models = setup_models(device, vncore_path)
     for input_json, output_json in datasets:
         process_dataset(input_json, output_json, models)

@@ -1,0 +1,2 @@
+run precompute_data.py first, when that done, then run process_articles.py 
+THat complete the precompute step

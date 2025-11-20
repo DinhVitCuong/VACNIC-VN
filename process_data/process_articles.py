@@ -4,6 +4,7 @@ import json
 import re 
 from typing import List, Tuple
 from vncore_singleton import get_vncore
+from utils_precompute import extract_entities
 
 LABEL_MAP = {
     "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
@@ -136,7 +137,7 @@ def save_full_processed_articles_all_ent_by_count(
     """
     os.makedirs(out_dir, exist_ok=True)
     # i = 0
-    for key, meta in tqdm(data_dict.items(), desc="make NER masks"):
+    for key, meta in tqdm(data_dict.items(), desc="making 'articles_all_ent_by_count'"):
         # if(i%100==0):
         #     print(f"[PROCESSING] DONE {i}")
         if meta.get("paragraphs"):              
@@ -169,6 +170,7 @@ def save_full_processed_articles_all_ent_by_count(
         entities_type, start_pos_list, *_ = \
             make_ner_dict_by_type(processed_text, ent_list, ent_type_list, article_full)
 
+        # print(f"[DEBUG] ent_list {ent_list} \n ent_type_list{ent_type_list} \n entities_type {entities_type}")
         ent_len_list = [len(tokenizer(t)["input_ids"]) - 2 for t in ent_list]
 
         article_ids_ner = make_new_article_ids_all_ent(
@@ -223,13 +225,26 @@ def find_first_sublist(seq, sublist, start=0):
 
 
 def get_caption_with_ent_type(nlp, caption, tokenizer):
-    processed_doc = nlp.annotate_text(caption)
-    entities = get_entities(processed_doc, caption)
+    sentences = caption
+    if not sentences:
+        return {}
+    processed_text=[]
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        try:
+            annotated_text = nlp.annotate_text(sent)
+            # print(f"[DEBUG] annotated_text: {annotated_text}")
+            processed_text.append(annotated_text)
+        except Exception as e:
+            print(f"Lỗi khi annotating text: {e}")
+    entities = get_entities(processed_text, caption)
         
     ent_list = [ entities[i]["text"] for i in range(len(entities)) ]
     ent_type_list = [ entities[i]["label"] for i in range(len(entities)) ]
         
-    entities_type, start_pos_list, _, _, _ = make_ner_dict_by_type(processed_doc, ent_list, ent_type_list, caption)
+    entities_type, start_pos_list, *_ = make_ner_dict_by_type(processed_text, ent_list, ent_type_list, caption)
 
     new_caption, caption_ids_ner = make_new_caption_ids_all_ent(caption, ent_list, entities_type, tokenizer)
     return new_caption, caption_ids_ner
@@ -285,7 +300,7 @@ def get_person_ids_position(article_ids_replaced, person_token_id=None, article_
 
 def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
     new_dict = {}
-    for key, value in tqdm(data_dict.items()):
+    for key, value in tqdm(data_dict.items(), desc="adding 'name_pos_cap' into processed dict:"):
         new_dict[key] = {}
         new_dict[key] = value
         _, caption_ids_ner = get_caption_with_ent_type(nlp, value["caption"], tokenizer)
@@ -297,62 +312,75 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained("vinai/bartpho-syllable")
+    tokenizer = AutoTokenizer.from_pretrained("/datastore/npl/ICEK/vacnic/vacnic_pretrained_model/bartpho-syllable")
     tokenizer.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>", '<PERSON>', "<ORGNORP>", "<GPELOC>"]})
     print("[DEBUG] Tokenizer loaded")
    
     PERSON_ID = tokenizer.convert_tokens_to_ids('<PERSON>')
 
-    nlp = get_vncore(r"Z:\DATN\model\vacnic_model\VnCoreNLP", with_heap=True)
+    nlp = get_vncore(r"/datastore/npl/ICEK/VnCoreNLP", with_heap=True)
 
-    with open(r'Z:\DATN\data\refined_data\demo20.json','r',encoding='utf-8') as f:
+    with open(r'/datastore/npl/ICEK/Wikipedia/content/ver5/demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
     print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\demo20"
+    OUT_DIR = r"/datastore/npl/ICEK/vacnic/data/embedding/article_all_ent_by_count_dir/demo20"
     save_full_processed_articles_all_ent_by_count(
             data_dict=data_dict,
             out_dir=OUT_DIR, 
             tokenizer=tokenizer,
             nlp=nlp)
 
-    with open(r'Z:\DATN\data\refined_data\test.json','r',encoding='utf-8') as f:
+    with open (r'/datastore/npl/ICEK/vacnic/data/demo20.json','r',encoding='utf-8') as f:
         data_dict = json.load(f)
-    print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\test"
-    save_full_processed_articles_all_ent_by_count(
-            data_dict=data_dict,
-            out_dir=OUT_DIR,
-            tokenizer=tokenizer,
-            nlp=nlp)
-    
-    with open(r'Z:\DATN\data\refined_data\val.json','r',encoding='utf-8') as f:
-        data_dict = json.load(f)
-    print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\val"
-    save_full_processed_articles_all_ent_by_count(
-            data_dict=data_dict,
-            out_dir=OUT_DIR,
-            tokenizer=tokenizer,
-            nlp=nlp)
+    new_data_dict =  add_name_pos_list_to_dict(data_dict, nlp, tokenizer)
+    with open(r'/datastore/npl/ICEK/vacnic/data/demo20.json', 'w', encoding='utf-8') as f:
+        json.dump(new_data_dict, f, ensure_ascii=False, indent=4)
 
-    with open(r'Z:\DATN\data\refined_data\mini_train.json','r',encoding='utf-8') as f:
-        data_dict = json.load(f)
-    print("[DEBUG] DATA LOADED, PROCESSING")
-    OUT_DIR = r"Z:\DATN\data\vacnic_data\embedding\article_all_ent_by_count_dir\mini_train"
-    save_full_processed_articles_all_ent_by_count(
-            data_dict=data_dict,
-            out_dir=OUT_DIR,
-            tokenizer=tokenizer,
-            nlp=nlp)
-
-    # with open(r'Z:\DATN\data\vacnic_data\train.json','r',encoding='utf-8') as f:
+    # with open(r'/datastore/npl/ICEK/Wikipedia/content/ver5/test.json','r',encoding='utf-8') as f:
     #     data_dict = json.load(f)
     # print("[DEBUG] DATA LOADED, PROCESSING")
-    # OUT_DIR = r"Z:\DATN\data\vacnic_data\article_all_ent_by_count_dir\train"
+    # OUT_DIR = r"/datastore/npl/ICEK/vacnic/data/embedding/article_all_ent_by_count_dir/test"
     # save_full_processed_articles_all_ent_by_count(
     #         data_dict=data_dict,
     #         out_dir=OUT_DIR,
     #         tokenizer=tokenizer,
     #         nlp=nlp)
+    
+    # with open (r'/datastore/npl/ICEK/vacnic/data/test.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # new_data_dict =  add_name_pos_list_to_dict(data_dict, nlp, tokenizer)
+    # with open(r'/datastore/npl/ICEK/vacnic/data/test.json', 'w', encoding='utf-8') as f:
+    #     json.dump(new_data_dict, f, ensure_ascii=False, indent=4)
+    
+    # with open(r'/datastore/npl/ICEK/Wikipedia/content/ver5/val.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # print("[DEBUG] DATA LOADED, PROCESSING")
+    # OUT_DIR = r"/datastore/npl/ICEK/vacnic/data/embedding/article_all_ent_by_count_dir/val"
+    # save_full_processed_articles_all_ent_by_count(
+    #         data_dict=data_dict,
+    #         out_dir=OUT_DIR,
+    #         tokenizer=tokenizer,
+    #         nlp=nlp)
+    
+    # with open (r'/datastore/npl/ICEK/vacnic/data/val.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # new_data_dict =  add_name_pos_list_to_dict(data_dict, nlp, tokenizer)
+    # with open(r'/datastore/npl/ICEK/vacnic/data/val.json', 'w', encoding='utf-8') as f:
+    #     json.dump(new_data_dict, f, ensure_ascii=False, indent=4)
 
+    # with open(r'/datastore/npl/ICEK/Wikipedia/content/ver5/train.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # print("[DEBUG] DATA LOADED, PROCESSING")
+    # OUT_DIR = r"/datastore/npl/ICEK/vacnic/data/embedding/article_all_ent_by_count_dir/train"
+    # save_full_processed_articles_all_ent_by_count(
+    #         data_dict=data_dict,
+    #         out_dir=OUT_DIR,
+    #         tokenizer=tokenizer,
+    #         nlp=nlp)
+    
+    # with open (r'/datastore/npl/ICEK/vacnic/data/train.json','r',encoding='utf-8') as f:
+    #     data_dict = json.load(f)
+    # new_data_dict =  add_name_pos_list_to_dict(data_dict, nlp, tokenizer)
+    # with open(r'/datastore/npl/ICEK/vacnic/data/train.json', 'w', encoding='utf-8') as f:
+    #     json.dump(new_data_dict, f, ensure_ascii=False, indent=4)
 
