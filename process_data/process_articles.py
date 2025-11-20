@@ -304,7 +304,7 @@ def add_name_pos_list_to_dict(data_dict, nlp, tokenizer):
         new_dict[key] = {}
         new_dict[key] = value
         _, caption_ids_ner = get_caption_with_ent_type(nlp, value["caption"], tokenizer)
-        position_list = get_person_ids_position(caption_ids_ner, person_token_id=PERSON_ID, article_max_length=20, is_tgt_input=True)
+        position_list = get_person_ids_position(caption_ids_ner, person_token_id=PERSON_ID, article_max_length=40, is_tgt_input=True)
 
         new_dict[key]["name_pos_cap"] = position_list
     return new_dict
