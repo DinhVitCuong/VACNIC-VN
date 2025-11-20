@@ -13,14 +13,18 @@ parser.add_argument("--num_workers", type=int, default=4)
 # parser.add_argument("--val_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_val.json')
 # parser.add_argument("--test_json", type=str, default='/data2/npl/ICEK/Wikipedia/content/vacnic/final/mini_test.json')
 
+# TEST DATASET
+parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
+parser.add_argument("--val_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
+parser.add_argument("--test_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
 # NEW DATASET
-parser.add_argument("--train_json", type=str, default=r'Z:\DATN\data\vacnic_data\mini_train.json')
-parser.add_argument("--val_json", type=str, default=r'Z:\DATN\data\vacnic_data\val.json')
-parser.add_argument("--test_json", type=str, default=r'Z:\DATN\data\vacnic_data\test.json')
+# parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/train.json')
+# parser.add_argument("--val_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/val.json')
+# parser.add_argument("--test_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/test.json')
 
 parser.add_argument("--article_max_length", type=int, default=512)
 parser.add_argument("--caption_max_length", type=int, default=100)
-parser.add_argument("--plm_type", type=str, default=r"Z:\DATN\model\vacnic_model\bartpho-syllable")
+parser.add_argument("--plm_type", type=str, default=r"/datastore/npl/ICEK/vacnic/vacnic_pretrained_model/bartpho-syllable")
 parser.add_argument("--clip_type", type=str, default="ViT-B/32")
 parser.add_argument("--ent_start_token", type=str, default="<ENT>")
 parser.add_argument("--ent_end_token", type=str, default="<ENT>")
@@ -30,7 +34,7 @@ parser.add_argument("--enc_fusion_layer",default=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
 parser.add_argument("--dim_common", type=int, default=1024)
 
 parser.add_argument("--warmup_rate", type=float, default=0.05)
-parser.add_argument("--train_batch_size", type=int, default=32)
+parser.add_argument("--train_batch_size", type=int, default=4)
 parser.add_argument("--val_batch_size", type=int, default=1)
 parser.add_argument("--test_batch_size", type=int, default=1)
 parser.add_argument("--beam_size", type=int, default=5)
@@ -41,10 +45,10 @@ parser.add_argument("--lr_clip", type=float, default = 1e-7)
 parser.add_argument("--weight_decay", type=float, default = 0.01)
 parser.add_argument("--clip_norm", type=float, default = 0.1)
 
-parser.add_argument("--emb_dir", type=str, default= r"Z:\DATN\data\vacnic_data\embedding")
-parser.add_argument("--art_dir", type=str, default= r"Z:\DATN\data\vacnic_data\embedding")
-parser.add_argument("--img_dir", type=str, default= r"Z:\DATN\data\refined_data\images_resized")
-parser.add_argument("--out_dir", type=str, default= r"Z:\DATN\temp\vacnic_output\v1")
+parser.add_argument("--emb_dir", type=str, default= r"/datastore/npl/ICEK/vacnic/data/embedding")
+parser.add_argument("--art_dir", type=str, default= r"/datastore/npl/ICEK/vacnic/data/embedding")
+parser.add_argument("--img_dir", type=str, default= r"/datastore/npl/ICEK/Wikipedia/image_resized")
+parser.add_argument("--out_dir", type=str, default= r"/datastore/npl/ICEK/vacnic/output/v1")
 
 parser.add_argument("--mapping_loss_type", type=str, default= "contrastive")
 
@@ -164,27 +168,27 @@ def create_src_mask_bart(input_ids):
     return src_mask
 
 
-def extract_clip_img_feat(clip_model, x):
-    with torch.no_grad():
-        vit_backbone = clip_model.eval().visual
-        dtype = vit_backbone.conv1.weight.dtype
-        DEVICE = x.device
-        x = vit_backbone.conv1(x.type(dtype))
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
-        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
-        x = torch.cat([vit_backbone.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=DEVICE), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-        x = x + vit_backbone.positional_embedding.to(x.dtype)
-        x = vit_backbone.ln_pre(x)
+# def extract_clip_img_feat(clip_model, x):
+#     with torch.no_grad():
+#         vit_backbone = clip_model.eval().visual
+#         dtype = vit_backbone.conv1.weight.dtype
+#         DEVICE = x.device
+#         x = vit_backbone.conv1(x.type(dtype))
+#         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+#         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+#         x = torch.cat([vit_backbone.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=DEVICE), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+#         x = x + vit_backbone.positional_embedding.to(x.dtype)
+#         x = vit_backbone.ln_pre(x)
 
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = vit_backbone.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        # x = self.vit_backbone.ln_post(x[:, 0, :]) # [1, 50, 768] --> [1, 768] ([CLS])
-        x_cls = vit_backbone.ln_post(x[:, 0, :])
-        x_cls = x_cls.float()
-        x = vit_backbone.ln_post(x[:, 1: ,:])
-        x = x.float()
-    return x, x_cls
+#         x = x.permute(1, 0, 2)  # NLD -> LND
+#         x = vit_backbone.transformer(x)
+#         x = x.permute(1, 0, 2)  # LND -> NLD
+#         # x = self.vit_backbone.ln_post(x[:, 0, :]) # [1, 50, 768] --> [1, 768] ([CLS])
+#         x_cls = vit_backbone.ln_post(x[:, 0, :])
+#         x_cls = x_cls.float()
+#         x = vit_backbone.ln_post(x[:, 1: ,:])
+#         x = x.float()
+#     return x, x_cls
 
 def extract_clip_img_feat(clip_model, x):
     """
@@ -295,6 +299,7 @@ def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt
                 hidden_states_face = output["hidden_states_face"]
                 hidden_states_names = get_embedding_ner(model=model, ner_ids_3d=names_ids_3d)
                 hidden_states_names = hidden_states_names.to(DEVICE)
+                # print(f"[DEBUG] hidden_states_face {hidden_states_face.shape}, hidden_states_names {hidden_states_names.shape}")
                 face_name_loss = bi_contras_loss(hidden_states_face, hidden_states_names)
                 tr_face_name_loss += face_name_loss.item()
 
@@ -560,10 +565,10 @@ if __name__ == "__main__":
     from transformers import (
             AutoTokenizer, PreTrainedTokenizerFast,
             BartForConditionalGeneration, get_linear_schedule_with_warmup)
-    from prepare_dataset import (
+    from ViWiki_dataset import (
             ViWikiDictDatasetEntityTypeFixLenEntPos,
             collate_fn_viwiki_entity_type)
-    from author_model import BartForMultiModalGeneration
+    from model import BartForMultiModalGeneration
     # --------------------------------------
     torch.autograd.set_detect_anomaly(True)
 
@@ -596,6 +601,8 @@ if __name__ == "__main__":
             super(BatchSoftmax, self).__init__()
 
         def forward(self, face_j, ner_j):
+            # print(f"[DEBUG] ner_j {ner_j.shape}")
+            # print(f"[DEBUG] face_j {face_j.shape}")
             face_ner_match = torch.matmul(ner_j.unsqueeze(1), face_j.permute(0, 2, 1))
             ner_face_match = torch.matmul(face_j.unsqueeze(1), ner_j.permute(0, 2, 1))
             loss1 = batch_softmax(face_ner_match)
@@ -611,9 +618,8 @@ if __name__ == "__main__":
         tokenizer = PreTrainedTokenizerFast.from_pretrained("ainize/bart-base-cnn")
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.plm_type)
-    
     if args.trained_clip == "no":
-        clip_path = r"Z:\DATN\model\vacnic_model\clip-ViT-B-32\0_CLIPModel"
+        clip_path = r"/datastore/npl/ICEK/vacnic/vacnic_pretrained_model/clip-ViT-B-32/0_CLIPModel"
         clip_model = CLIPModel.from_pretrained(
                 clip_path,
                 local_files_only=True
@@ -637,9 +643,10 @@ if __name__ == "__main__":
         if param.requires_grad:
             print(param)
 
-    
+    tokenizer.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>"]})
     # noname_id = tokenizer.convert_tokens_to_ids("<NONAME>")  
     model.resize_token_embeddings(len(tokenizer))
+
     # 1. Check the config (less reliable)
     print(f"Model config vocab size: {model.config.vocab_size}")
 
@@ -648,11 +655,11 @@ if __name__ == "__main__":
     print(f"Model's ACTUAL embedding size: {actual_model_vocab_size}")
 
     # You can also check the shape directly
-    # shape_0 = model.get_input_embeddings().weight.shape[0]
-    # print(f"Model embedding layer shape[0]: {shape_0}")
-
+    shape_0 = model.get_input_embeddings().weight.shape[0]
+    print(f"Model embedding layer shape[0]: {shape_0}")
     # This assertion should pass if everything is correct
     assert len(tokenizer) == actual_model_vocab_size
+
     if args.perturb:
         bos_noise = torch.randn(1024)
         model.model.shared.weight.data[0] = model.model.shared.weight.data[0] + bos_noise
@@ -662,15 +669,16 @@ if __name__ == "__main__":
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         normalize])
-    print(len(tokenizer))  # Tokenizer vocab size
-    print(model.config.vocab_size) 
+    # print(len(tokenizer))  # Tokenizer vocab size
+    # print(model.config.vocab_size) 
     print(f"[DEBUG] DONE LOAD BART MODEL")
     
 
     tokenizer_dataset = AutoTokenizer.from_pretrained(args.plm_type)
     tokenizer_dataset.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>", '<PERSON>', "<ORGNORP>", "<GPELOC>"]})
-
-
+    
+    person_token_id = tokenizer_dataset.convert_tokens_to_ids('<PERSON>')
+    print(f"[DEBUG] PERSON ids: {person_token_id}")
     def build_dataset(json_path,split):
         with open(json_path, 'r', encoding='utf-8') as f:
             data_dict = json.load(f)
@@ -686,15 +694,18 @@ if __name__ == "__main__":
                     max_ner_type_len=args.max_ner_type_len,
                     max_ner_type_len_gt=args.max_ner_type_len_gt,
                     retrieved_sent=True,
-                    person_token_id=40032,
+                    person_token_id=person_token_id,
                     split=split,
                     clip_processor = clip_preprocess,
                     entity_token_start=args.ent_start_token, 
                     entity_token_end=args.ent_end_token
                     )
-    train_data = build_dataset(args.train_json, "mini_train")
-    val_data   = build_dataset(args.val_json, "val")
-    test_data  = build_dataset(args.test_json, "test")  
+    # train_data = build_dataset(args.train_json, "train")
+    # val_data   = build_dataset(args.val_json, "val")
+    # test_data  = build_dataset(args.test_json, "test")  
+    train_data = build_dataset(args.train_json, "demo20")
+    val_data   = build_dataset(args.val_json, "demo20")
+    test_data  = build_dataset(args.test_json, "demo20")  
     train_loader = DataLoader(train_data, args.train_batch_size,
                         num_workers=args.num_workers, collate_fn=collate_fn_viwiki_entity_type)
 

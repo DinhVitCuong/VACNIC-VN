@@ -93,16 +93,17 @@ def collate_fn_viwiki_entity_type(batch):
         caption_ids_clip_batch = torch.empty((1,1))
     
     max_len_art_ids = get_max_len([names_art_ids_list, org_norp_gpe_loc_art_ids_list])
-    
     max_len_name_ids = get_max_len_list(names_ids_list)
     max_len_org_norp_gpe_loc_ids = get_max_len_list(org_norp_gpe_loc_ids_list)
     
     names_art_ids_batch = pad_sequence(names_art_ids_list, 1, max_len=max_len_art_ids)
     org_norp_gpe_loc_art_ids_batch = pad_sequence(org_norp_gpe_loc_art_ids_list, 1, max_len=max_len_art_ids)
 
-    names_ids_batch = pad_sequence_from_list(names_ids_list, special_token_id=40032, bos_token_id=0, pad_token_id=1, eos_token_id=2,  max_len=max_len_name_ids)
-
-    org_norp_gpe_loc_ids_batch = pad_sequence_from_list(org_norp_gpe_loc_ids_list, special_token_id=40032, bos_token_id=0, pad_token_id=1, eos_token_id=2, max_len=max_len_org_norp_gpe_loc_ids)
+    names_ids_batch = pad_sequence_from_list(names_ids_list, special_token_id=40031, bos_token_id=0, pad_token_id=1, eos_token_id=2,  max_len=max_len_name_ids)
+    # print(f"[DEBUG] in collate, padded; names_ids_batch : {names_ids_batch}")
+    # print(f"[DEBUG] in collate, squeeze; names_ids_batch.squeeze(1) : {names_ids_batch.squeeze(1)}")
+    
+    org_norp_gpe_loc_ids_batch = pad_sequence_from_list(org_norp_gpe_loc_ids_list, special_token_id=40031, bos_token_id=0, pad_token_id=1, eos_token_id=2, max_len=max_len_org_norp_gpe_loc_ids)
 
     all_gt_ner_ids_batch = pad_sequence(all_gt_ner_ids_list, 1)
 
@@ -305,13 +306,12 @@ def make_new_entity_ids(caption, ent_list, tokenizer, ent_separator="<ent>", max
     # print(caption_ids_ner)
 
     sep_token = tokenizer(ent_separator, add_special_tokens=False)["input_ids"]
-    # print(sep_token)
 
     noname_token = tokenizer("<NONAME>")["input_ids"][1:-1]
 
     ent_ids_flatten = []
     ent_ids_separate = []
-    print(f"[DEBUG] caption: {caption} \n ent_list {ent_list} \n ###################")
+    # print(f"[DEBUG] caption: {caption} \n ent_list {ent_list} \n ###################")
     for ent in ent_list:
         # in case entities were in the middle of the sentence
         ent_ids_original = tokenizer(f" {ent}")["input_ids"][1:-1]
@@ -655,7 +655,7 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
 
         person_id_positions = get_person_ids_position(article_ner_mask_dict["input_ids"], person_token_id=self.person_token_id, article_max_length=self.max_len)
         person_id_positions_cap = self.data_dict[hash_id]["name_pos_cap"]
-        print(f"[DEBUG] person_id_positions_cap {person_id_positions_cap}")
+        # print(f"[DEBUG] person_id_positions_cap {person_id_positions_cap}")
         
         caption_ids = self.tokenizer(caption, return_tensors="pt", truncation=True,  max_length=100)["input_ids"]
         if self.use_clip_tokenizer:
@@ -677,7 +677,6 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         
 
         names_ids_flatten, names_ids = make_new_entity_ids(caption, names, self.tokenizer, ent_separator=self.entity_token_start, max_length=self.max_ner_type_len_gt)
-
         # names.append("<NONAME>")
         # names_ids = self.tokenizer(names, truncation=True, padding='max_length', max_length=self.max_ner_type_len_gt)["input_ids"]
         

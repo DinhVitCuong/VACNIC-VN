@@ -1,5 +1,24 @@
+tokenizer_dataset
+
 <ENT> → 40030
 <NONAME> → 40031
 <PERSON> → 40032
 <ORGNORP> → 40033
 <GPELOC> → 40034
+
+PAD ID: 1  (Token: <pad>)
+EOS ID: 2  (Token: </s>)
+BOS ID: 0  (Token: <s>)
+UNK ID: 3  (Token: <unk>)
+CLS ID: 0  (Token: <s>)
+SEP ID: 2  (Token: </s>)
+
+tokenizer
+
+--- Special Token IDs ---
+PAD ID: 1  (Token: <pad>)
+EOS ID: 2  (Token: </s>)
+BOS ID: 0  (Token: <s>)
+UNK ID: 3  (Token: <unk>)
+CLS ID: 0  (Token: <s>)
+SEP ID: 2  (Token: </s>)
