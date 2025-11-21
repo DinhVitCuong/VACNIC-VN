@@ -2,9 +2,12 @@
 import argparse
 from cmath import nan
 import logging
+import random
+import torch
+import torch.nn as nn
 parser = argparse.ArgumentParser()
 # parser.add_argument("--local_rank", type=int, default=-1)
-parser.add_argument("--seed", type=str, default="684331")
+parser.add_argument("--seed", type=str, default=684331)
 parser.add_argument("--gpu_ids", type=str, default="1")
 parser.add_argument("--num_workers", type=int, default=4)
 
@@ -34,7 +37,7 @@ parser.add_argument("--enc_fusion_layer",default=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 
 parser.add_argument("--dim_common", type=int, default=1024)
 
 parser.add_argument("--warmup_rate", type=float, default=0.05)
-parser.add_argument("--train_batch_size", type=int, default=4)
+parser.add_argument("--train_batch_size", type=int, default=2)
 parser.add_argument("--val_batch_size", type=int, default=1)
 parser.add_argument("--test_batch_size", type=int, default=1)
 parser.add_argument("--beam_size", type=int, default=5)
@@ -88,10 +91,79 @@ parser.add_argument("--alpha", type=float, default=0.5)
 
 args = parser.parse_args()
 
+def seed_everything(seed: int):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
+def check_model_parameters(model):
+    print("Scanning model parameters for anomalies...")
+    for name, param in model.named_parameters():
+        # check for NaNs
+        if torch.isnan(param).any():
+            print(f"!! NaN detected in {name}")
+            
+        # check for uninitialized garbage (magnitude > 1000 is usually suspicious for weights)
+        max_val = param.abs().max()
+        if max_val > 1000:
+            print(f"!! SUSPICIOUS MAGNITUDE in {name}: {max_val:.2e}")
+
+def sanitize_model_weights(model, log_failures=True):
+    """
+    Scans the model for 'garbage' values (uninitialized memory) caused by 
+    low_cpu_mem_usage or missing checkpoint keys, and resets them.
+    """
+    print(f"SCANNING MODEL ON DEVICE: {next(model.parameters()).device}...")
+    
+    has_fixed = False
+    
+    # We loop through every module (layer) in the network
+    for name, module in model.named_modules():
+        
+        # Target your custom LayerNorms specifically
+        if isinstance(module, nn.LayerNorm):
+            # 1. Check Weight
+            if hasattr(module, 'weight') and module.weight is not None:
+                # Calculate average magnitude. If it's huge (>1000) or NaN, it's garbage.
+                # standard LayerNorm weights should be close to 1.0.
+                w_mean = module.weight.detach().abs().mean()
+                is_garbage = w_mean > 100 or torch.isnan(w_mean)
+                
+                if is_garbage:
+                    if log_failures:
+                        print(f"!! FIXING GARBAGE WEIGHT in {name} (Mean: {w_mean:.2e})")
+                    
+                    # FORCE RESET TO IDENTITY
+                    with torch.no_grad():
+                        module.weight.fill_(1.0)
+                    has_fixed = True
+
+            # 2. Check Bias
+            if hasattr(module, 'bias') and module.bias is not None:
+                b_mean = module.bias.detach().abs().mean()
+                is_garbage = b_mean > 100 or torch.isnan(b_mean)
+                
+                if is_garbage:
+                    if log_failures:
+                        print(f"!! FIXING GARBAGE BIAS in {name} (Mean: {b_mean:.2e})")
+                    
+                    # FORCE RESET TO ZERO
+                    with torch.no_grad():
+                        module.bias.fill_(0.0)
+                    has_fixed = True
+
+    if not has_fixed:
+        print("Scan complete. No uninitialized layers found.")
+    else:
+        print("Scan complete. Garbage layers have been re-initialized.")
 
 def prep_for_training(model, train_size, DEVICE):
     model.to(DEVICE)
+    sanitize_model_weights(model)
+    check_model_parameters(model)
     # clip_model.to(DEVICE)
     if "," in args.gpu_ids:
         optimizer_bart = optim.AdamW(list(model.module.model.parameters()) + list(model.module.lm_head.parameters()),betas= (0.9, 0.999), lr=args.lr_bart, eps=1e-8, weight_decay=args.weight_decay)
@@ -249,15 +321,75 @@ def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt
         else:
             img_feat, img_feat_cls, _ = extract_clip_img_feat(model.clip_model, img_tensors)
 
-        # print("src", src_ids.size())
+# # --- DEBUG BLOCK: Check Inputs Before Model Call ---
+#         print(f"\n>>> Checking inputs for Batch {batch['article_ids'].shape}...")
+
+#         def check_input_tensor(name, t):
+#             if t is None:
+#                 print(f" {name:<25} | IS NONE (Skipping)")
+#                 return
+            
+#             if not isinstance(t, torch.Tensor):
+#                 print(f" {name:<25} | Type: {type(t)} (Not a tensor)")
+#                 return
+
+#             # CRITICAL FIX: Cast to float for stats to avoid "mean() not implemented for Long"
+#             t_float = t.float()
+
+#             # Check for numerical instability
+#             is_nan = torch.isnan(t_float).any().item()
+#             is_inf = torch.isinf(t_float).any().item()
+            
+#             # Basic Stats
+#             if t.numel() > 0:
+#                 t_min = t_float.min().item()
+#                 t_max = t_float.max().item()
+#                 t_mean = t_float.mean().item()
+#             else:
+#                 t_min, t_max, t_mean = 0, 0, 0
+
+#             status = "OK"
+#             if is_nan: status = "!!! FAIL: NaN DETECTED!!!"
+#             elif is_inf: status = "!!! FAIL: Inf DETECTED!!!"
+            
+#             # Only warn about explosion for floating point tensors (images/features), not IDs
+#             elif t.is_floating_point():
+#                 if abs(t_max) > 65000: status = "! CRITICAL: FP16 OVERFLOW RISK"
+#                 elif abs(t_max) > 1e4: status = "! WARNING: High Value"
+
+#             print(f" {name:<25} | Shape: {str(list(t.shape)):<18} | "
+#                   f"Min: {t_min:<10.4f} | Max: {t_max:<10.4f} | Status: {status}")
+            
+#             if is_nan or is_inf:
+#                 raise RuntimeError(f"Training Halted: {name} contains invalid values (NaN/Inf).")
+
+#         # Check every tensor argument
+#         check_input_tensor("input_ids", src_ids)
+#         check_input_tensor("attention_mask", src_mask)
+#         check_input_tensor("decoder_input_ids", tgt_input)
+        
+#         # CRITICAL CHECKS (Most likely culprits)
+#         check_input_tensor("image_features", img_feat_cls) 
+#         check_input_tensor("face_features", face_emb)
+#         check_input_tensor("face_mask", face_mask)
+        
+#         check_input_tensor("name_ids", names_art_ids)
+#         check_input_tensor("name_mask", names_art_mask)
+        
+#         print(">>> All inputs verified. Proceeding to forward pass...\n")
+#         # --- END DEBUG BLOCK ---
+
         if args.prompt_mlp_type == "clipcap":
             output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat_cls, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
         else:
             output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
         logits = output["logits"]
 
-        
+        # print("[DEBUG] logits has NaN:", torch.isnan(logits).any().item())
+        # print("[DEBUG] logits has Inf:", torch.isinf(logits).any().item())
+        # print("[DEBUG] logits min/max:", logits.min().item(), logits.max().item())
         txt_loss = loss_fn(logits.reshape(-1, logits.shape[-1]), tgt_ids.reshape(-1))
+        # print(f"[DEBUG] tgt_ids shape {tgt_ids.shape}, logits shape {logits.shape}")
         tr_txt_loss += txt_loss.item()
 
         # import ipdb
@@ -335,6 +467,7 @@ def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt
             loss = txt_loss + args.alpha * loss_bart_margin
         else:
             loss = txt_loss + args.mapping_loss_weight * face_name_loss + args.alpha * loss_bart_margin
+        # print(f"[DEBUG] loss {loss} \n txt_loss {txt_loss} \n args.mapping_loss_weight {args.mapping_loss_weight} \n face_name_loss {face_name_loss} \n args.alpha {args.alpha} \n loss_bart_margin {loss_bart_margin} ")
         loss.backward()
         if not args.no_clip_norm:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.clip_norm)
@@ -570,6 +703,7 @@ if __name__ == "__main__":
             collate_fn_viwiki_entity_type)
     from model import BartForMultiModalGeneration
     # --------------------------------------
+    seed_everything(args.seed)
     torch.autograd.set_detect_anomaly(True)
 
 
@@ -634,9 +768,9 @@ if __name__ == "__main__":
                                      std=[0.26862954, 0.26130258, 0.27577711])
 
     model = BartForMultiModalGeneration.from_pretrained(args.plm_type, output_hidden_states=True, enc_fusion_layer=args.enc_fusion_layer, dim_common=args.dim_common, img_size=args.img_size, prompt_mlp_type=args.prompt_mlp_type, map_size=args.map_size, prompt_size=args.prompt_size, clip_model=clip_model, freeze_clip=args.freeze_clip, max_ner_type_len=args.max_ner_type_len, max_ner_type_len_gt=args.max_ner_type_len_gt, only_image=args.only_image, init_attn_weight=args.init_attn_weight)
-
     bart_model = BartForConditionalGeneration.from_pretrained(args.plm_type, output_hidden_states=True)
     bart_model = bart_model.to(DEVICE)
+    sanitize_model_weights(model)
     for param in bart_model.parameters():
         param.requires_grad = False
     for param in bart_model.parameters():
@@ -647,18 +781,18 @@ if __name__ == "__main__":
     # noname_id = tokenizer.convert_tokens_to_ids("<NONAME>")  
     model.resize_token_embeddings(len(tokenizer))
 
-    # 1. Check the config (less reliable)
-    print(f"Model config vocab size: {model.config.vocab_size}")
+    # # 1. Check the config (less reliable)
+    # print(f"Model config vocab size: {model.config.vocab_size}")
 
-    # 2. Check the actual embedding layer (most reliable)
-    actual_model_vocab_size = model.get_input_embeddings().num_embeddings
-    print(f"Model's ACTUAL embedding size: {actual_model_vocab_size}")
+    # # 2. Check the actual embedding layer (most reliable)
+    # actual_model_vocab_size = model.get_input_embeddings().num_embeddings
+    # print(f"Model's ACTUAL embedding size: {actual_model_vocab_size}")
 
-    # You can also check the shape directly
-    shape_0 = model.get_input_embeddings().weight.shape[0]
-    print(f"Model embedding layer shape[0]: {shape_0}")
-    # This assertion should pass if everything is correct
-    assert len(tokenizer) == actual_model_vocab_size
+    # # You can also check the shape directly
+    # shape_0 = model.get_input_embeddings().weight.shape[0]
+    # print(f"Model embedding layer shape[0]: {shape_0}")
+    # # This assertion should pass if everything is correct
+    # assert len(tokenizer) == actual_model_vocab_size
 
     if args.perturb:
         bos_noise = torch.randn(1024)

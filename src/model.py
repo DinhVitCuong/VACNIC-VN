@@ -71,6 +71,96 @@ BART_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # see all BART models at https://huggingface.co/models?filter=bart
 ]
 
+from dataclasses import fields
+def debug_model_output(output, step_name="Encoder_Output"):
+    """
+    Iterates through a ModelOutput dataclass, printing shape and stats
+    for every Tensor or Tuple.
+    """
+    print(f"\n--- Checking {step_name} ---")
+    
+    # Iterate over all fields defined in the dataclass
+    for field in fields(output):
+        value = getattr(output, field.name)
+        
+        if value is None:
+            continue
+            
+        # Helper to check a single tensor
+        def check_tensor(t, name):
+            if not isinstance(t, torch.Tensor):
+                return
+            
+            has_nan = torch.isnan(t).any().item()
+            has_inf = torch.isinf(t).any().item()
+            
+            # Calculate stats only if safe (optional, but helpful for debugging explosion)
+            if t.numel() > 0:
+                t_min = t.min().item()
+                t_max = t.max().item()
+                t_mean = t.mean().item()
+            else:
+                t_min, t_max, t_mean = "N/A", "N/A", "N/A"
+
+            status = "OK"
+            if has_nan: status = "!!! NAN DETECTED!!!"
+            elif has_inf: status = "!!! INF DETECTED!!!"
+            
+            print(f" {name:<25} | Shape: {str(list(t.shape)):<20} | "
+                  f"Min: {t_min:<10.4f} | Max: {t_max:<10.4f} | Status: {status}")
+
+        # Handle Single Tensor (e.g., last_hidden_state)
+        if isinstance(value, torch.Tensor):
+            check_tensor(value, field.name)
+            
+        # Handle Tuples/Lists of Tensors (e.g., hidden_states, attentions)
+        elif isinstance(value, (tuple, list)):
+            for i, item in enumerate(value):
+                if isinstance(item, torch.Tensor):
+                    check_tensor(item, f"{field.name}[{i}]")
+
+    print("--------------------------------------------------\n")
+# debug_model_output(encoder_outputs, step_name="final_encoder_output")
+def check_input_tensor(name, t):
+    if t is None:
+        print(f" {name:<25} | IS NONE (Skipping)")
+        return
+    
+    if not isinstance(t, torch.Tensor):
+        print(f" {name:<25} | Type: {type(t)} (Not a tensor)")
+        return
+
+    # CRITICAL FIX: Cast to float for stats to avoid "mean() not implemented for Long"
+    t_float = t.float()
+
+    # Check for numerical instability
+    is_nan = torch.isnan(t_float).any().item()
+    is_inf = torch.isinf(t_float).any().item()
+    
+    # Basic Stats
+    if t.numel() > 0:
+        t_min = t_float.min().item()
+        t_max = t_float.max().item()
+        t_mean = t_float.mean().item()
+    else:
+        t_min, t_max, t_mean = 0, 0, 0
+
+    status = "OK"
+    if is_nan: status = "!!! FAIL: NaN DETECTED!!!"
+    elif is_inf: status = "!!! FAIL: Inf DETECTED!!!"
+    
+    # Only warn about explosion for floating point tensors (images/features), not IDs
+    elif t.is_floating_point():
+        if abs(t_max) > 65000: status = "! CRITICAL: FP16 OVERFLOW RISK"
+        elif abs(t_max) > 1e4: status = "! WARNING: High Value"
+
+    print(f" {name:<25} | Shape: {str(list(t.shape)):<18} | "
+            f"Min: {t_min:<10.4f} | Max: {t_max:<10.4f} | Status: {status}")
+    
+    if is_nan or is_inf:
+        raise RuntimeError(f"Training Halted: {name} contains invalid values (NaN/Inf).")
+#         # Check every tensor argument
+#         check_input_tensor("input_ids", src_ids)
 
 class MLP(nn.Module):
     def __init__(self, sizes: Tuple[int, ...], hidden_size, bias=True, act=nn.Tanh):
@@ -694,7 +784,7 @@ class BartEncoderLayer(nn.Module):
                 hidden_states_img_ner_kv = hidden_states_img
 
             residual = hidden_states
-            attention_mask = attention_mask.to('cuda')
+            attention_mask = attention_mask.cuda()
             hidden_states, attn_weights, _ = self.self_attn(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -723,7 +813,7 @@ class BartEncoderLayer(nn.Module):
         
         else:
             residual = hidden_states
-            attention_mask = attention_mask.to('cuda')
+            attention_mask = attention_mask.cuda()
             hidden_states, attn_weights, _ = self.self_attn(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -851,7 +941,7 @@ class BartDecoderLayer(nn.Module):
 
             # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
             cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
-            encoder_attention_mask = encoder_attention_mask.to('cuda')
+            encoder_attention_mask = encoder_attention_mask.cuda()
             hidden_states, cross_attn_weights, cross_attn_present_key_value = self.encoder_attn(
                 hidden_states=hidden_states,
                 key_value_states=encoder_hidden_states,
@@ -1146,15 +1236,13 @@ class BartEncoder(BartPretrainedModel):
         if not only_image:
             # ent embedding layer
             # self.embed_tokens_ner = copy.deepcopy(self.embed_tokens)
-            # self.embed_tokens_ner = nn.Embedding(50267, config.d_model, self.padding_idx)
-            # self.embed_tokens_ner.weight.data[:50265, :] = self.embed_tokens.weight.data[:50265, :]
             self.embed_tokens_ner = nn.Embedding(40032, config.d_model, self.padding_idx)
             self.embed_tokens_ner.weight.data[:40030, :] = self.embed_tokens.weight.data[:40030, :]
 
             self.embed_positions_ner = copy.deepcopy(self.embed_positions)
             
             self.layernorm_embedding_ner = nn.LayerNorm(config.d_model)
-
+            # self._init_layernorm_weights()
         self.only_image = only_image
 
         self.max_ner_type_len = max_ner_type_len
@@ -1163,6 +1251,11 @@ class BartEncoder(BartPretrainedModel):
         self._linear_1 = nn.Linear(face_visual_feature_dim, dim_common) # K, V
 
         self.embed_dim = config.d_model
+
+    def _init_layernorm_weights(self):
+        # Force gamma to 1.0 and beta to 0.0
+        nn.init.ones_(self.layernorm_embedding_ner.weight)
+        nn.init.zeros_(self.layernorm_embedding_ner.bias)
         
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1239,7 +1332,7 @@ class BartEncoder(BartPretrainedModel):
             input_shape = inputs_embeds.size()[:-1]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
-        input_ids = input_ids.to('cuda')
+        input_ids = input_ids.cuda()
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
 
@@ -1252,12 +1345,11 @@ class BartEncoder(BartPretrainedModel):
 
         ##############################
         if not self.only_image:
+            
             inputs_embeds_ner = self.embed_tokens_ner(name_ids) * self.embed_scale
-
             embed_pos_ner = self.embed_positions_ner(name_ids.size())
-
             hidden_states_ner = inputs_embeds_ner + embed_pos_ner
-            hidden_states_ner = self.layernorm_embedding_ner(hidden_states_ner)
+            hidden_states_ner = self.layernorm_embedding_ner(hidden_states_ner) 
             hidden_states_ner = nn.functional.dropout(hidden_states_ner, p=self.dropout, training=self.training)
 
             face_mask = torch.cat((face_mask, name_mask), dim=1)
@@ -1266,7 +1358,7 @@ class BartEncoder(BartPretrainedModel):
             else:
                 face_name_mask_cross = _expand_mask(name_mask, inputs_embeds.dtype, tgt_len=self.max_ner_type_len_gt)
 
-            face_features = face_features.to('cuda')
+            face_features = face_features.cuda()
             hidden_states_face = self._linear_1(face_features)
         else:
             hidden_states_face = None
@@ -1551,7 +1643,7 @@ class BartDecoder(BartPretrainedModel):
 
         # past_key_values_length
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
-        input_ids = input_ids.to('cuda')
+        input_ids = input_ids.cuda()
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
         
@@ -1792,7 +1884,17 @@ class BartModel(BartPretrainedModel):
         #     image_features = image_features.reshape(image_features.size()[0], self.prompt_size, 768)
         # if self.embed_dim == 1024:
         #     image_features = self.visual_map(image_features)
-
+        # check_input_tensor("input_ids", input_ids)
+        # check_input_tensor("attention_mask", attention_mask)
+        # check_input_tensor("head_mask", head_mask)
+        # check_input_tensor("inputs_embeds", inputs_embeds)
+        # check_input_tensor("output_attentions", output_attentions)
+        # check_input_tensor("output_hidden_states", output_hidden_states)
+        # check_input_tensor("image_features", image_features)
+        # check_input_tensor("name_ids", name_ids)
+        # check_input_tensor("name_mask", name_mask)
+        # check_input_tensor("face_features", face_features)
+        # check_input_tensor("face_mask", face_mask)
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
@@ -1820,6 +1922,8 @@ class BartModel(BartPretrainedModel):
                 hidden_states_ner=encoder_outputs["hidden_states_ner"],
                 hidden_states_face=encoder_outputs["hidden_states_face"],
             )
+
+        # debug_model_output(encoder_outputs, step_name="final_encoder_output")
 
         # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
         decoder_outputs = self.decoder(
@@ -2093,5 +2197,3 @@ if __name__ == "__main__":
     print(prompt_mlp_clipcap)
     print(get_n_params(prompt_mlp_clipcap))
     prompt_mlp_clipcap(torch.randn(16, 768))
-
-

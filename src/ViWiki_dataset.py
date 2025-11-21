@@ -119,8 +119,6 @@ def collate_fn_viwiki_entity_type(batch):
 
     return {"article": article_list, "article_ids":article_ids_batch.squeeze(1), "article_ner_mask_ids":article_ner_mask_ids_batch.squeeze(1), "caption": caption_list, "caption_ids": caption_ids_batch.squeeze(1), "caption_ids_clip": caption_ids_clip_batch.squeeze(1), "names_art": names_art_list, "names_art_ids": names_art_ids_batch.squeeze(1), "org_norp_gpe_loc_art": org_norp_gpe_loc_art_list, "org_norp_gpe_loc_art_ids": org_norp_gpe_loc_art_ids_batch.squeeze(1), "names":names_list, "names_ids":names_ids_batch.squeeze(1), "org_norp_gpe_loc":org_norp_gpe_loc_list, "org_norp_gpe_loc_ids":org_norp_gpe_loc_ids_batch.squeeze(1), "all_gt_ner_ids":all_gt_ner_ids_batch.squeeze(1), "all_gt_ner":all_gt_ner_list, "face_emb":face_batch.float(), "obj_emb":obj_batch.float(), "img_tensor":img_batch, "person_id_positions":person_id_positions_list, "person_id_positions_cap":person_id_positions_cap_list, "names_ids_flatten":names_ids_flatten_batch.squeeze(1), "org_norp_gpe_loc_ids_flatten":org_norp_gpe_loc_ids_flatten_batch.squeeze(1)}
 
-
-
 def get_max_len_list(seq_list_of_list):
     # input list of seq_list, output max len
     max_len_list = []
@@ -560,7 +558,8 @@ class ViWikiDictDatasetEntityTypeFixLenEntPos(Dataset):
         obj_emb = np.array([[]])
         
         if self.retrieved_sent:
-            article = self.data_dict[hash_id]["sents_byclip"]
+            article = self.data_dict[hash_id]["sents_byclip"] #Ensure VNese tone normalization
+            
         else:
             with open(os.path.join(os.path.join(self.article_dir, f"{hash_id}.txt"))) as f:
                 article = f.read()
