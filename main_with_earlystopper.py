@@ -25,13 +25,13 @@ parser.add_argument("--plm_type", type=str, default=r"/datastore/npl/ICEK/vacnic
 parser.add_argument("--clip_type", type=str, default="ViT-B/32")
 parser.add_argument("--ent_start_token", type=str, default="<ENT>")
 parser.add_argument("--ent_end_token", type=str, default="<ENT>")
-parser.add_argument("--perturb", type=bool, default=True)
+parser.add_argument("--perturb", type=bool, default=False)
 
 parser.add_argument("--enc_fusion_layer",default=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], type=int)
 parser.add_argument("--dim_common", type=int, default=1024)
 
 parser.add_argument("--warmup_rate", type=float, default=0.05)
-parser.add_argument("--train_batch_size", type=int, default=16)
+parser.add_argument("--train_batch_size", type=int, default=32)
 parser.add_argument("--val_batch_size", type=int, default=1)
 parser.add_argument("--test_batch_size", type=int, default=1)
 parser.add_argument("--beam_size", type=int, default=5)
@@ -525,7 +525,60 @@ def eval_epoch(model, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart, val
         nb_val_steps += 1
 
         logging.info({"validation loss": loss})
+    
 
+        # GEN CAPTION: 
+        beam_size = args.beam_size
+        max_length = args.max_length
+        if "," in args.gpu_ids:
+            if args.prompt_mlp_type == "clipcap":
+                gen_cap_ids = model.module.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat_cls,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
+            else:
+                gen_cap_ids = model.module.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
+        else:
+            if args.prompt_mlp_type == "clipcap":
+                gen_cap_ids = model.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat_cls,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
+            else:
+                gen_cap_ids = model.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
+
+        gen_cap = tokenizer.batch_decode(gen_cap_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+
+
+        gen_unidecode = gen_cap
+        gt_unidecode = tgt_sent[0]
+
+        caption = re.sub(r'[^\w\s]', '', gt_unidecode)
+        generation = re.sub(r'[^\w\s]', '', gen_unidecode)
+
+        bleu_scorer += (generation, [caption])
+        rouge_score = rouge_scorer.calc_score([generation], [caption])
+        rouge_scores.append(rouge_score)
+        cider_scorer += (generation, [caption])
+
+        stat = meteor_scorer._stat(generation, [caption])
+        eval_line += ' ||| {}'.format(stat)
+        count += 1
+
+        out_dict[step]["gt"] = gt_unidecode
+        out_dict[step]["gen"] = gen_unidecode
+    
+    meteor_scorer.meteor_p.stdin.write('{}\n'.format(eval_line).encode())
+    meteor_scorer.meteor_p.stdin.flush()
+    for _ in range(count):
+        meteor_scores.append(float(meteor_scorer.meteor_p.stdout.readline().strip()))
+    meteor_score = float(meteor_scorer.meteor_p.stdout.readline().strip())
+    meteor_scorer.lock.release()
+
+    blue_score, _ = bleu_scorer.compute_score(option='closest')
+    rouge_score = np.mean(np.array(rouge_scores))
+    cider_score, _ = cider_scorer.compute_score()
+
+
+    out_dict["bleu"] = {}
+    out_dict["bleu"] = {"bleu1":blue_score[0],"bleu2":blue_score[1],"bleu3":blue_score[2],"bleu4":blue_score[3]}
+    out_dict["other metrics"] = {}
+    out_dict["other metrics"] = {"rouge":rouge_score, "meteor":meteor_score, "cider":cider_score}
+    logging.info({"bleu": out_dict["bleu"], "other metrics": out_dict["other metrics"]})
     return val_loss / nb_val_steps, out_dict
 
 
@@ -565,7 +618,7 @@ def train(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt_clip,
             model.eval()
             torch.save(model, best_ckpt_path)
             with open(os.path.join(args.out_dir, f"{epoch_i}{model_name}v.json"), "w", encoding="utf-8") as f:
-                json.dump(out_dict, f)
+                json.dump(out_dict, f, ensure_ascii=False, indent=4)
             logging.info({"best_val_loss": best_val_loss, "best_epoch": epoch_i})
         else:
             # only count "no improve" after warmup, and if early stopping is enabled
@@ -871,7 +924,7 @@ if __name__ == "__main__":
     loss_txt = torch.nn.CrossEntropyLoss()
     loss_clip_bart = torch.nn.CrossEntropyLoss()
     loss_margin = torch.nn.HingeEmbeddingLoss(margin=args.margin)
-    print(f"[DEBUG] DONE LOSS, START TRAINING")
+    print(f"[DEBUG] DONE LOSS LOADING, START TRAINING")
 
     train(bart_model, model, loss_margin, loss_fn, loss_img, loss_txt, loss_clip_bart, train_loader, val_loader, test_loader, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip, 'first', DEVICE)
 
@@ -893,8 +946,8 @@ if __name__ == "__main__":
     meteor_scores = []
 
     test_out_dict, blue1, blue2, blue3, blue4, rouge_score, meteor_score, cider_score = gen_caption_from_loader_bart(model, test_loader, tokenizer, bleu_scorer, rouge_scorer, cider_scorer, meteor_scorer, args.beam_size, args.max_length, DEVICE)
-    with open(os.path.join(args.out_dir, 'first'+"last.json"), "w") as f:
-        json.dump(test_out_dict, f)
+    with open(os.path.join(args.out_dir, 'first'+"last.json"), "w", encoding="utf-8") as f:
+        json.dump(test_out_dict, f, ensure_ascii=False, indent=4)
     
     logging.info({"bleu1":blue1, "bleu2":blue2, "bleu3":blue3, "bleu4":blue4, "rouge":rouge_score, "meteor":meteor_score, "cider":cider_score})
 
