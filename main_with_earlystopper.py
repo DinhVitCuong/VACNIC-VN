@@ -1,224 +1,433 @@
-
-import argparse
-from cmath import nan
-import logging
+# coding=utf-8
+# Copyright 2021 The Fairseq Authors and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+""" PyTorch BART model."""
+import copy
+import math
 import random
+import warnings
+from typing import List, Optional, Tuple, Union
+
 import torch
-import torch.nn as nn
-parser = argparse.ArgumentParser()
-# parser.add_argument("--local_rank", type=int, default=-1)
-parser.add_argument("--seed", type=str, default=684331)
-parser.add_argument("--gpu_ids", type=str, default="1")
-parser.add_argument("--num_workers", type=int, default=4)
-# TEST DATASET
-# parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
-# parser.add_argument("--val_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
-# parser.add_argument("--test_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
-# NEW DATASET
-parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/train.json')
-parser.add_argument("--val_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/val.json')
-parser.add_argument("--test_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/test.json')
+import torch.nn.functional as F
+import torch.utils.checkpoint
+from torch import nn
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-parser.add_argument("--article_max_length", type=int, default=512)
-parser.add_argument("--caption_max_length", type=int, default=100)
-parser.add_argument("--plm_type", type=str, default=r"/datastore/npl/ICEK/vacnic/vacnic_pretrained_model/bartpho-syllable")
-parser.add_argument("--clip_type", type=str, default="ViT-B/32")
-parser.add_argument("--ent_start_token", type=str, default="<ENT>")
-parser.add_argument("--ent_end_token", type=str, default="<ENT>")
-parser.add_argument("--perturb", type=bool, default=False)
+from dataclasses import dataclass
 
-parser.add_argument("--enc_fusion_layer",default=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], type=int)
-parser.add_argument("--dim_common", type=int, default=1024)
+from transformers.activations import ACT2FN
+from transformers.utils.generic import ModelOutput
+from transformers.modeling_outputs import (
+    CausalLMOutputWithCrossAttentions,
+    Seq2SeqQuestionAnsweringModelOutput,
+    Seq2SeqSequenceClassifierOutput,
+)
+from transformers.generation.utils import GenerationMixin
+from transformers.modeling_utils import PreTrainedModel
+from transformers.utils import (
+    add_code_sample_docstrings,
+    add_end_docstrings,
+    add_start_docstrings,
+    add_start_docstrings_to_model_forward,
+    logging,
+    replace_return_docstrings,
+)
+from transformers.models.bart.configuration_bart import BartConfig
+from transformers import CLIPTokenizer
 
-parser.add_argument("--warmup_rate", type=float, default=0.05)
-parser.add_argument("--train_batch_size", type=int, default=32)
-parser.add_argument("--val_batch_size", type=int, default=1)
-parser.add_argument("--test_batch_size", type=int, default=1)
-parser.add_argument("--beam_size", type=int, default=5)
-parser.add_argument("--max_length", type=int, default=50)
-parser.add_argument("--num_epoch", type=int, default=200) #######################
+logger = logging.get_logger(__name__)
 
-# ---- Early stopping (optional) ----
-parser.add_argument("--early_stop", default=True, type=lambda x: (str(x).lower() == 'true'))
-parser.add_argument("--early_stop_patience", type=int, default=10, help="Stop if val loss doesn't improve for N epochs")
-parser.add_argument("--early_stop_min_delta", type=float, default=0.0, help="Minimum loss decrease to count as improvement")
-parser.add_argument("--early_stop_warmup", type=int, default=0, help="Ignore early-stop checks for first N epochs")
+_CHECKPOINT_FOR_DOC = "facebook/bart-base"
+_CONFIG_FOR_DOC = "BartConfig"
+_TOKENIZER_FOR_DOC = "BartTokenizer"
 
-parser.add_argument("--lr_bart", type=float, default = 3e-5)
-parser.add_argument("--lr_clip", type=float, default = 1e-7)
-parser.add_argument("--weight_decay", type=float, default = 0.01)
-parser.add_argument("--clip_norm", type=float, default = 0.1)
+# Base model docstring
+_EXPECTED_OUTPUT_SHAPE = [1, 8, 768]
 
-parser.add_argument("--emb_dir", type=str, default= r"/datastore/npl/ICEK/vacnic/data/embedding")
-parser.add_argument("--art_dir", type=str, default= r"/datastore/npl/ICEK/vacnic/data/embedding")
-parser.add_argument("--img_dir", type=str, default= r"/datastore/npl/ICEK/Wikipedia/image_resized")
-parser.add_argument("--out_dir", type=str, default= r"/datastore/npl/ICEK/vacnic/output/v2")
+# SequenceClassification docstring
+_CHECKPOINT_FOR_SEQUENCE_CLASSIFICATION = "valhalla/bart-large-sst2"
+_SEQ_CLASS_EXPECTED_LOSS = 0.0
+_SEQ_CLASS_EXPECTED_OUTPUT = "'POSITIVE'"
 
-parser.add_argument("--mapping_loss_type", type=str, default= "contrastive")
+# QuestionAsnwering docstring
+_CHECKPOINT_FOR_QA = "valhalla/bart-large-finetuned-squadv1"
+_QA_EXPECTED_LOSS = 0.59
+_QA_EXPECTED_OUTPUT = "' nice puppet'"
 
-parser.add_argument("--trained_clip", type=str, default="no")
-parser.add_argument("--no_clip_loss", default=True, type=lambda x: (str(x).lower() == 'true'))
-parser.add_argument("--prompt_size", type=int, default=20)
-parser.add_argument("--use_vis_cls", default=True, type=lambda x: (str(x).lower() == 'true'))
 
-parser.add_argument("--max_ner_type_len", type=int, default=80)
-parser.add_argument("--max_ner_type_len_gt", type=int, default=20)
+BART_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "facebook/bart-large",
+    # see all BART models at https://huggingface.co/models?filter=bart
+]
 
-parser.add_argument("--freeze_clip", default=True, type=lambda x: (str(x).lower() == 'true'))
-
-parser.add_argument("--prompt_mlp_type", type=str, default="clipcap")
-parser.add_argument("--map_size", default= [196, 256, 64, 16], nargs="+", type=int)
-
-parser.add_argument("--no_mapping", default=False, type=lambda x: (str(x).lower() == 'true'))
-parser.add_argument("--mapping_loss_weight", type=float, default = 1.0)
-parser.add_argument("--img_size", type=int, default=768)
-
-parser.add_argument("--only_image", default=False, type=lambda x: (str(x).lower() == 'true'))
-
-parser.add_argument("--use_secla", default=True, type=lambda x: (str(x).lower() == 'true'))
-
-parser.add_argument("--num_sentences", type=int, default=8)
-
-parser.add_argument("--offline_wandb", default=True, type=lambda x: (str(x).lower() == 'true'))
-
-# parser.add_argument("--perturb", default=False, type=lambda x: (str(x).lower() == 'true'))
-
-parser.add_argument("--no_clip_norm", default=True, type=lambda x: (str(x).lower() == 'true'))
-
-parser.add_argument("--init_attn_weight", default=False, type=lambda x: (str(x).lower() == 'true'))
-
-parser.add_argument("--margin", type=float, default=1.0)
-parser.add_argument("--alpha", type=float, default=0.5)
-
-args = parser.parse_args()
-
-def seed_everything(seed: int):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-def check_model_parameters(model):
-    print("Scanning model parameters for anomalies...")
-    for name, param in model.named_parameters():
-        # check for NaNs
-        if torch.isnan(param).any():
-            print(f"!! NaN detected in {name}")
-            
-        # check for uninitialized garbage (magnitude > 1000 is usually suspicious for weights)
-        max_val = param.abs().max()
-        if max_val > 1000:
-            print(f"!! SUSPICIOUS MAGNITUDE in {name}: {max_val:.2e}")
-
-def sanitize_model_weights(model, log_failures=True):
+from dataclasses import fields
+def debug_model_output(output, step_name="Encoder_Output"):
     """
-    Scans the model for 'garbage' values (uninitialized memory) caused by 
-    low_cpu_mem_usage or missing checkpoint keys, and resets them.
+    Iterates through a ModelOutput dataclass, printing shape and stats
+    for every Tensor or Tuple.
     """
-    print(f"SCANNING MODEL ON DEVICE: {next(model.parameters()).device}...")
+    print(f"\n--- Checking {step_name} ---")
     
-    has_fixed = False
-    
-    # We loop through every module (layer) in the network
-    for name, module in model.named_modules():
+    # Iterate over all fields defined in the dataclass
+    for field in fields(output):
+        value = getattr(output, field.name)
         
-        # Target your custom LayerNorms specifically
-        if isinstance(module, nn.LayerNorm):
-            # 1. Check Weight
-            if hasattr(module, 'weight') and module.weight is not None:
-                # Calculate average magnitude. If it's huge (>1000) or NaN, it's garbage.
-                # standard LayerNorm weights should be close to 1.0.
-                w_mean = module.weight.detach().abs().mean()
-                is_garbage = w_mean > 100 or torch.isnan(w_mean)
-                
-                if is_garbage:
-                    if log_failures:
-                        print(f"!! FIXING GARBAGE WEIGHT in {name} (Mean: {w_mean:.2e})")
-                    
-                    # FORCE RESET TO IDENTITY
-                    with torch.no_grad():
-                        module.weight.fill_(1.0)
-                    has_fixed = True
+        if value is None:
+            continue
+            
+        # Helper to check a single tensor
+        def check_tensor(t, name):
+            if not isinstance(t, torch.Tensor):
+                return
+            
+            has_nan = torch.isnan(t).any().item()
+            has_inf = torch.isinf(t).any().item()
+            
+            # Calculate stats only if safe (optional, but helpful for debugging explosion)
+            if t.numel() > 0:
+                t_min = t.min().item()
+                t_max = t.max().item()
+                t_mean = t.mean().item()
+            else:
+                t_min, t_max, t_mean = "N/A", "N/A", "N/A"
 
-            # 2. Check Bias
-            if hasattr(module, 'bias') and module.bias is not None:
-                b_mean = module.bias.detach().abs().mean()
-                is_garbage = b_mean > 100 or torch.isnan(b_mean)
-                
-                if is_garbage:
-                    if log_failures:
-                        print(f"!! FIXING GARBAGE BIAS in {name} (Mean: {b_mean:.2e})")
-                    
-                    # FORCE RESET TO ZERO
-                    with torch.no_grad():
-                        module.bias.fill_(0.0)
-                    has_fixed = True
+            status = "OK"
+            if has_nan: status = "!!! NAN DETECTED!!!"
+            elif has_inf: status = "!!! INF DETECTED!!!"
+            
+            print(f" {name:<25} | Shape: {str(list(t.shape)):<20} | "
+                  f"Min: {t_min:<10.4f} | Max: {t_max:<10.4f} | Status: {status}")
 
-    if not has_fixed:
-        print("Scan complete. No uninitialized layers found.")
-    else:
-        print("Scan complete. Garbage layers have been re-initialized.")
+        # Handle Single Tensor (e.g., last_hidden_state)
+        if isinstance(value, torch.Tensor):
+            check_tensor(value, field.name)
+            
+        # Handle Tuples/Lists of Tensors (e.g., hidden_states, attentions)
+        elif isinstance(value, (tuple, list)):
+            for i, item in enumerate(value):
+                if isinstance(item, torch.Tensor):
+                    check_tensor(item, f"{field.name}[{i}]")
 
-def prep_for_training(model, train_size, DEVICE):
-    model.to(DEVICE)
-    sanitize_model_weights(model)
-    check_model_parameters(model)
-    # clip_model.to(DEVICE)
-    if "," in args.gpu_ids:
-        optimizer_bart = optim.AdamW(list(model.module.model.parameters()) + list(model.module.lm_head.parameters()),betas= (0.9, 0.999), lr=args.lr_bart, eps=1e-8, weight_decay=args.weight_decay)
-
-        optimizer_clip = optim.AdamW(list(model.module.clip_model.parameters()),betas= (0.9, 0.999), lr=args.lr_clip, eps=1e-8, weight_decay=args.weight_decay)
-    else:
-        optimizer_bart = optim.AdamW(list(model.model.parameters()) + list(model.lm_head.parameters()),betas= (0.9, 0.999), lr=args.lr_bart, eps=1e-8, weight_decay=args.weight_decay)
-
-        optimizer_clip = optim.AdamW(list(model.clip_model.parameters()),betas= (0.9, 0.999), lr=args.lr_clip, eps=1e-8, weight_decay=args.weight_decay)
-
-    num_training_steps = args.num_epoch * train_size / args.train_batch_size
-    num_warmup_steps = args.warmup_rate * num_training_steps
+    print("--------------------------------------------------\n")
+# debug_model_output(encoder_outputs, step_name="final_encoder_output")
+def check_input_tensor(name, t):
+    if t is None:
+        print(f" {name:<25} | IS NONE (Skipping)")
+        return
     
-    scheduler_bart = get_linear_schedule_with_warmup(optimizer_bart,
-                                                num_warmup_steps,
-                                                num_training_steps)
-    scheduler_clip = get_linear_schedule_with_warmup(optimizer_clip,
-                                                num_warmup_steps,
-                                                num_training_steps)
+    if not isinstance(t, torch.Tensor):
+        print(f" {name:<25} | Type: {type(t)} (Not a tensor)")
+        return
 
-    return model, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip
+    # CRITICAL FIX: Cast to float for stats to avoid "mean() not implemented for Long"
+    t_float = t.float()
 
-def get_embedding_ner(model, ner_ids_3d):
-    bsz, num_ner, id_len = ner_ids_3d.size()
-    hidden_states_ner_list = []
-    with torch.no_grad():
-        if "," in args.gpu_ids:
-            encoder = model.module.model.encoder
-        else:
-            encoder = model.model.encoder
-        for i in range(num_ner):
-            ner_ids = ner_ids_3d[:, i, :].squeeze(1)
-            ner_shape = ner_ids.size()
-            ner_ids = ner_ids.view(-1, ner_shape[-1])
-            ner_embeds = encoder.embed_tokens_ner(ner_ids) * encoder.embed_scale
-            embed_pos_ner = encoder.embed_positions_ner(ner_shape)
+    # Check for numerical instability
+    is_nan = torch.isnan(t_float).any().item()
+    is_inf = torch.isinf(t_float).any().item()
+    
+    # Basic Stats
+    if t.numel() > 0:
+        t_min = t_float.min().item()
+        t_max = t_float.max().item()
+        t_mean = t_float.mean().item()
+    else:
+        t_min, t_max, t_mean = 0, 0, 0
 
-            hidden_states_ner = ner_embeds + embed_pos_ner
-            hidden_states_ner = encoder.layernorm_embedding_ner(hidden_states_ner)
-            hidden_states_ner = torch.nn.functional.dropout(hidden_states_ner, p=encoder.dropout, training=False)
-            hidden_states_ner_list.append(torch.mean(hidden_states_ner, dim=1))
-            del hidden_states_ner
-    # return hidden_states_ner
-    return torch.stack(hidden_states_ner_list, dim=1)
+    status = "OK"
+    if is_nan: status = "!!! FAIL: NaN DETECTED!!!"
+    elif is_inf: status = "!!! FAIL: Inf DETECTED!!!"
+    
+    # Only warn about explosion for floating point tensors (images/features), not IDs
+    elif t.is_floating_point():
+        if abs(t_max) > 65000: status = "! CRITICAL: FP16 OVERFLOW RISK"
+        elif abs(t_max) > 1e4: status = "! WARNING: High Value"
+
+    print(f" {name:<25} | Shape: {str(list(t.shape)):<18} | "
+            f"Min: {t_min:<10.4f} | Max: {t_max:<10.4f} | Status: {status}")
+    
+    if is_nan or is_inf:
+        raise RuntimeError(f"Training Halted: {name} contains invalid values (NaN/Inf).")
+#         # Check every tensor argument
+#         check_input_tensor("input_ids", src_ids)
+
+class MLP(nn.Module):
+    def __init__(self, sizes: Tuple[int, ...], hidden_size, bias=True, act=nn.Tanh):
+        """
+        sizes: dims for linear layers, first one should be the img feat size
+        """
+        super(MLP, self).__init__()
+        layers = []
+        for i in range(len(sizes) - 1):
+            # if i == len(sizes)-2:
+            #     layers.append(nn.Linear(sizes[i] * hidden_size, sizes[i + 1] * hidden_size, bias=bias))
+            # else:
+            #     layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=bias))
+            layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=bias))
+            if i < len(sizes) - 2:
+                layers.append(act())
+        self.sizes = sizes
+        # self.layers = layers
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, feat_size, hidden_size = x.size()
+        x = x.reshape((B, hidden_size, feat_size))
+        # for i in range(len(self.layers)):
+        #     print(f"size before layer {i}:{x.size()}")
+        #     # if i == len(self.layers)-1:
+        #     #     x = self.layers[i](x.reshape(B, x.size(1) * x.size(2)))
+        #     # else:
+        #     #     x = self.layers[i](x)
+        #     print(f"size after layer {i}:{x.size()}")
+        x = self.model(x)
+        x = x.reshape(B, self.sizes[-1], hidden_size)
+        # print(f"final size:{x.size()}")
+        return x
 
 
-def pool(last_hidden_states, attention_mask):
-    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
-    emb = last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-    emb = torch.nan_to_num(emb, nan=1.0)
-    return emb
+class MLPClipCap(nn.Module):
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+    def __init__(self, sizes: Tuple[int, ...], bias=True, act=nn.Tanh):
+        super(MLPClipCap, self).__init__()
+        layers = []
+        for i in range(len(sizes) - 1):
+            layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=bias))
+            if i < len(sizes) - 2:
+                layers.append(act())
+        self.model = nn.Sequential(*layers)
+
+@dataclass
+class BaseModelOutput(ModelOutput):
+    """
+    Base class for model's outputs, with potential hidden states and attentions.
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the model.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+        hidden_states_ner (`tuple(torch.FloatTensor)`, *optional*,
+    """
+
+    last_hidden_state: torch.FloatTensor = None
+    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    attentions: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_img: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_ner: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_face: Optional[Tuple[torch.FloatTensor]] = None
+
+@dataclass
+class BaseModelOutputWithPastAndCrossAttentions(ModelOutput):
+    """
+    Base class for model's outputs that may also contain a past key/values (to speed up sequential decoding).
+
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the model.
+            If `past_key_values` is used only the last hidden-state of the sequences of shape `(batch_size, 1,
+            hidden_size)` is output.
+        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and optionally if
+            `config.is_encoder_decoder=True` 2 additional tensors of shape `(batch_size, num_heads,
+            encoder_sequence_length, embed_size_per_head)`.
+            Contains pre-computed hidden-states (key and values in the self-attention blocks and optionally if
+            `config.is_encoder_decoder=True` in the cross-attention blocks) that can be used (see `past_key_values`
+            input) to speed up sequential decoding.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+        cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` and `config.add_cross_attention=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights of the decoder's cross-attention layer, after the attention softmax, used to compute the
+            weighted average in the cross-attention heads.
+        hidden_states_ner (`tuple(torch.FloatTensor)`, *optional*, returned training:
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `
+    """
+    last_hidden_state: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    attentions: Optional[Tuple[torch.FloatTensor]] = None
+    cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_face: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_ner: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_img: Optional[Tuple[torch.FloatTensor]] = None
 
 
-def shift_tokens_right(input_ids, pad_token_id: int, decoder_start_token_id: int):
+
+@dataclass
+class Seq2SeqModelOutput(ModelOutput):
+    """
+    Base class for model encoder's outputs that also contains : pre-computed hidden states that can speed up sequential
+    decoding.
+
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the decoder of the model.
+            If `past_key_values` is used only the last hidden-state of the sequences of shape `(batch_size, 1,
+            hidden_size)` is output.
+        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
+            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
+            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
+            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
+        decoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+            Hidden-states of the decoder at the output of each layer plus the optional initial embedding outputs.
+        decoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights of the decoder, after the attention softmax, used to compute the weighted average in the
+            self-attention heads.
+        cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights of the decoder's cross-attention layer, after the attention softmax, used to compute the
+            weighted average in the cross-attention heads.
+        encoder_last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Sequence of hidden-states at the output of the last layer of the encoder of the model.
+        encoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+            Hidden-states of the encoder at the output of each layer plus the optional initial embedding outputs.
+        encoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights of the encoder, after the attention softmax, used to compute the weighted average in the
+            self-attention heads.
+        hidden_states_ner (`tuple(torch.FloatTensor)`, *optional*, returned when training:
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `
+    """
+    last_hidden_state: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    decoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    decoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    encoder_last_hidden_state: Optional[torch.FloatTensor] = None
+    encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_face: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_ner: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_img: Optional[Tuple[torch.FloatTensor]] = None
+
+
+@dataclass
+class Seq2SeqLMOutput(ModelOutput):
+    """
+    Base class for sequence-to-sequence language models outputs.
+    
+    Args:
+        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+            Language modeling loss.
+        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
+            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
+            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
+            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
+            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
+        decoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+            Hidden-states of the decoder at the output of each layer plus the initial embedding outputs.
+        decoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights of the decoder, after the attention softmax, used to compute the weighted average in the
+            self-attention heads.
+        cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights of the decoder's cross-attention layer, after the attention softmax, used to compute the
+            weighted average in the cross-attention heads.
+        encoder_last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Sequence of hidden-states at the output of the last layer of the encoder of the model.
+        encoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+            Hidden-states of the encoder at the output of each layer plus the initial embedding outputs.
+        encoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+            Attentions weights of the encoder, after the attention softmax, used to compute the weighted average in the
+            self-attention heads.
+        hidden_states_ner (`tuple(torch.FloatTensor)`, *optional*, returned when training:
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `
+    """
+
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+    decoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    decoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    cross_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    encoder_last_hidden_state: Optional[torch.FloatTensor] = None
+    encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_face: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_ner: Optional[Tuple[torch.FloatTensor]] = None
+    hidden_states_img: Optional[Tuple[torch.FloatTensor]] = None
+
+
+class ClipViTFeat(torch.nn.Module):
+    def __init__(self, clip_model):
+        super().__init__()
+        self.vit_backbone = clip_model.eval().visual
+    @property
+    def dtype(self):
+        return self.vit_backbone.conv1.weight.dtype
+    def forward(self, x):
+        DEVICE = x.device
+        x = self.vit_backbone.conv1(x.type(self.dtype))
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat([self.vit_backbone.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=DEVICE), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.vit_backbone.positional_embedding.to(x.dtype)
+        x = self.vit_backbone.ln_pre(x)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.vit_backbone.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        # x = self.vit_backbone.ln_post(x[:, 0, :]) # [1, 50, 768] --> [1, 768] ([CLS])
+        x = self.vit_backbone.ln_post(x[:, 1: ,:])
+        x = x.float()
+        # x = x.type(torch.HalfTensor).to(DEVICE)
+        return x
+
+
+def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
     """
     Shift input ids one token to the right.
     """
@@ -233,722 +442,1759 @@ def shift_tokens_right(input_ids, pad_token_id: int, decoder_start_token_id: int
 
     return shifted_input_ids
 
-def create_src_mask_bart(input_ids):
-    src_padding_mask = (input_ids == 1)
-    src_mask = (src_padding_mask<1)
-    src_mask = src_mask.int().type(torch.int64)
-    src_mask = src_mask.to(input_ids.device)
-    return src_mask
 
-def extract_clip_img_feat(clip_model, x):
+# def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_values_length: int = 0, hidden_states_added_mask=None):
+#     """
+#     Make causal mask used for bi-directional self-attention.
+#     """
+#     bsz, tgt_len = input_ids_shape
+#     mask = torch.full((tgt_len, tgt_len), torch.tensor(torch.finfo(dtype).min))
+#     mask_cond = torch.arange(mask.size(-1))
+#     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+#     mask = mask.to(dtype)
+
+#     mask = torch.cat((hidden_states_added_mask.expand(mask.size()[0], hidden_states_added_mask.size()[1]).to(mask.device), mask), dim=1)
+
+#     if past_key_values_length > 0:
+#         mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype), mask], dim=-1)
+#     # return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
+#     return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length + hidden_states_added_mask.size()[1])
+
+def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_values_length: int = 0):
     """
-    x: [B, 3, H, W], already preprocessed (processor(... )["pixel_values"])
-    returns:
-        x_tokens: [B, num_patches, D]
-        x_cls:    [B, D]
+    Make causal mask used for bi-directional self-attention.
     """
-    with torch.no_grad():
-        clip_model.eval()
-
-        vision_model = clip_model.vision_model
-        dtype = next(vision_model.parameters()).dtype
-        x = x.to(dtype)
-
-        outputs = vision_model(pixel_values=x)
-
-        last_hidden = outputs.last_hidden_state       # [B, 1 + num_patches, D]
-        x_cls = outputs.pooler_output                 # [B, D]
-        x_tokens = last_hidden[:, 1:, :]              # [B, num_patches, D]
-
-        return x_tokens.float(), x_cls.float(), last_hidden.float()
-
-
-def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart, train_dataloader, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip, epoch, DEVICE):
-    model.train()
-    tr_loss = 0
-    tr_txt_loss = 0
-    tr_clip_loss = 0
-    tr_face_name_loss = 0
-    tr_ner_loss = 0
-    nb_tr_steps = 0
-
-    tr_margin_loss = 0
-    bi_contras_loss = BatchSoftmax()
-    for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-
-        src_ids, tgt_ids, tgt_ids_clip, img_tensors, face_emb, names_art_ids, names_ids, names_ids_flatten = batch["article_ids"], batch["caption_ids"], batch["caption_ids_clip"], batch["img_tensor"], batch["face_emb"], batch["names_art_ids"], batch["names_ids"], batch["names_ids_flatten"]
-        src_ids = src_ids.to(DEVICE)
-        # src_ner_mask_ids = src_ner_mask_ids.to(DEVICE)
-        tgt_ids = tgt_ids.to(DEVICE)
-        tgt_ids_clip = tgt_ids_clip.to(DEVICE)
-        img_tensors = img_tensors.to(DEVICE)
-        face_emb = face_emb.to(DEVICE)
-
-        names_art_ids = names_art_ids.to(DEVICE)
-        names_ids_3d = names_ids.to(DEVICE)
-        names_ids_flatten = names_ids_flatten.to(DEVICE)
-
-        tgt_input = shift_tokens_right(tgt_ids, tokenizer.pad_token_id, tokenizer.eos_token_id)
-        src_mask = create_src_mask_bart(src_ids)
-        face_mask = create_src_mask_bart(face_emb[:, :, -1])
-        names_art_mask = create_src_mask_bart(names_art_ids)
-        names_cap_mask = create_src_mask_bart(names_ids_flatten)
-
-        if "," in args.gpu_ids:
-            img_feat, img_feat_cls, _ = extract_clip_img_feat(model.module.clip_model, img_tensors)
-        else:
-            img_feat, img_feat_cls, _ = extract_clip_img_feat(model.clip_model, img_tensors)
-
-# # --- DEBUG BLOCK: Check Inputs Before Model Call ---
-#         print(f"\n>>> Checking inputs for Batch {batch['article_ids'].shape}...")
-
-#         def check_input_tensor(name, t):
-#             if t is None:
-#                 print(f" {name:<25} | IS NONE (Skipping)")
-#                 return
-            
-#             if not isinstance(t, torch.Tensor):
-#                 print(f" {name:<25} | Type: {type(t)} (Not a tensor)")
-#                 return
-
-#             # CRITICAL FIX: Cast to float for stats to avoid "mean() not implemented for Long"
-#             t_float = t.float()
-
-#             # Check for numerical instability
-#             is_nan = torch.isnan(t_float).any().item()
-#             is_inf = torch.isinf(t_float).any().item()
-            
-#             # Basic Stats
-#             if t.numel() > 0:
-#                 t_min = t_float.min().item()
-#                 t_max = t_float.max().item()
-#                 t_mean = t_float.mean().item()
-#             else:
-#                 t_min, t_max, t_mean = 0, 0, 0
-
-#             status = "OK"
-#             if is_nan: status = "!!! FAIL: NaN DETECTED!!!"
-#             elif is_inf: status = "!!! FAIL: Inf DETECTED!!!"
-            
-#             # Only warn about explosion for floating point tensors (images/features), not IDs
-#             elif t.is_floating_point():
-#                 if abs(t_max) > 65000: status = "! CRITICAL: FP16 OVERFLOW RISK"
-#                 elif abs(t_max) > 1e4: status = "! WARNING: High Value"
-
-#             print(f" {name:<25} | Shape: {str(list(t.shape)):<18} | "
-#                   f"Min: {t_min:<10.4f} | Max: {t_max:<10.4f} | Status: {status}")
-            
-#             if is_nan or is_inf:
-#                 raise RuntimeError(f"Training Halted: {name} contains invalid values (NaN/Inf).")
-
-#         # Check every tensor argument
-#         check_input_tensor("input_ids", src_ids)
-#         check_input_tensor("attention_mask", src_mask)
-#         check_input_tensor("decoder_input_ids", tgt_input)
-        
-#         # CRITICAL CHECKS (Most likely culprits)
-#         check_input_tensor("image_features", img_feat_cls) 
-#         check_input_tensor("face_features", face_emb)
-#         check_input_tensor("face_mask", face_mask)
-        
-#         check_input_tensor("name_ids", names_art_ids)
-#         check_input_tensor("name_mask", names_art_mask)
-        
-#         print(">>> All inputs verified. Proceeding to forward pass...\n")
-#         # --- END DEBUG BLOCK ---
-
-        if args.prompt_mlp_type == "clipcap":
-            output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat_cls, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-        else:
-            output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-        logits = output["logits"]
-
-        # print("[DEBUG] logits has NaN:", torch.isnan(logits).any().item())
-        # print("[DEBUG] logits has Inf:", torch.isinf(logits).any().item())
-        # print("[DEBUG] logits min/max:", logits.min().item(), logits.max().item())
-        txt_loss = loss_fn(logits.reshape(-1, logits.shape[-1]), tgt_ids.reshape(-1))
-        # print(f"[DEBUG] tgt_ids shape {tgt_ids.shape}, logits shape {logits.shape}")
-        tr_txt_loss += txt_loss.item()
-
-        # import ipdb
-        # ipdb.set_trace()
-        decoder_hidden_states = output["decoder_hidden_states"][-1]
-        output_bart = bart_model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input)
-        decoder_hidden_states_bart = output_bart["decoder_hidden_states"][-1]
-
-        tgt_mask = create_src_mask_bart(tgt_ids)
-        decoder_hidden_states = pool(decoder_hidden_states, tgt_mask)
-        decoder_hidden_states_bart = pool(decoder_hidden_states_bart, tgt_mask)
-        
-        decoder_hidden_states = decoder_hidden_states / decoder_hidden_states.norm(dim=1, keepdim=True)
-        decoder_hidden_states_bart = decoder_hidden_states_bart / decoder_hidden_states_bart.norm(dim=1, keepdim=True)
-
-
-        # loss_bart_margin = loss_margin(decoder_hidden_states, decoder_hidden_states_bart, -torch.ones(decoder_hidden_states.shape[0]).to(decoder_hidden_states.device))
-        scores = torch.matmul(decoder_hidden_states, decoder_hidden_states_bart.t())
-
-        loss_bart_margin = loss_margin(scores.diag(), -torch.ones(decoder_hidden_states.shape[0]).to(decoder_hidden_states.device))
-
-        tr_margin_loss += loss_bart_margin.item()
-        # ipdb.set_trace()
-
-        if not args.no_clip_loss:
-            if "," in args.gpu_ids:
-                logits_per_image, logits_per_text = model.module.clip_model(img_tensors, tgt_ids_clip)
-            else:
-                logits_per_image, logits_per_text = model.clip_model(img_tensors, tgt_ids_clip)
-            clip_gt = torch.arange(img_tensors.size()[0], dtype=torch.long, device=DEVICE)
-
-            total_loss_clip = (loss_img_clip(logits_per_image, clip_gt) + loss_txt_clip(logits_per_text, clip_gt))/2
-
-            tr_clip_loss += total_loss_clip.item()
-        
-
-        if not args.no_mapping:
-            if args.use_secla:
-                hidden_states_face = output["hidden_states_face"]
-                hidden_states_names = get_embedding_ner(model=model, ner_ids_3d=names_ids_3d)
-                hidden_states_names = hidden_states_names.to(DEVICE)
-                # print(f"[DEBUG] hidden_states_face {hidden_states_face.shape}, hidden_states_names {hidden_states_names.shape}")
-                face_name_loss = bi_contras_loss(hidden_states_face, hidden_states_names)
-                tr_face_name_loss += face_name_loss.item()
-
-            else:
-                hidden_states_face = output["hidden_states_face"]
-                # face_feat_map = torch.mean(face_feat_map, dim=1)
-                hidden_states_face = pool(hidden_states_face, face_mask)
-                hidden_states_face = hidden_states_face / hidden_states_face.norm(dim=1, keepdim=True)
-
-                with torch.no_grad():
-                    hidden_states_names = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat_cls, face_features=face_emb, face_mask=face_mask, name_ids=names_ids_flatten, name_mask=names_cap_mask, add_ner_ffn=False)["hidden_states_ner"]
-                
-                hidden_states_names = hidden_states_names.to(DEVICE)
-                # hidden_states_names = pool_replace(hidden_states_names, pooling_mask_ent_gt.to(DEVICE), hidden_states_face)
-                hidden_states_names = pool(hidden_states_names, names_cap_mask.to(DEVICE))
-                hidden_states_names = hidden_states_names / hidden_states_names.norm(dim=1, keepdim=True)
-
-                if "," in args.gpu_ids:
-                    logit_contras1 = model.module.clip_model.logit_scale.exp() * hidden_states_names @ hidden_states_face.t()
-                    logit_contras2 = model.module.clip_model.logit_scale.exp() * hidden_states_face @ hidden_states_names.t()
-                else:
-                    logit_contras1 = model.clip_model.logit_scale.exp() * hidden_states_names @ hidden_states_face.t()
-                    logit_contras2 = model.clip_model.logit_scale.exp() * hidden_states_face @ hidden_states_names.t()
-                clip_gt = torch.arange(img_tensors.size()[0], dtype=torch.long, device=DEVICE)
-                face_name_loss = 0.5 * loss_clip_bart(logit_contras1, clip_gt) + 0.5 * loss_clip_bart(logit_contras2, clip_gt)
-                    
-                tr_face_name_loss += face_name_loss.item()
-
-        
-        if not args.no_clip_loss:
-            loss = total_loss_clip + txt_loss + args.mapping_loss_weight * face_name_loss + args.alpha * loss_bart_margin
-        elif args.no_mapping:
-            loss = txt_loss + args.alpha * loss_bart_margin
-        else:
-            loss = txt_loss + args.mapping_loss_weight * face_name_loss + args.alpha * loss_bart_margin
-        # print(f"[DEBUG] loss {loss} \n txt_loss {txt_loss} \n args.mapping_loss_weight {args.mapping_loss_weight} \n face_name_loss {face_name_loss} \n args.alpha {args.alpha} \n loss_bart_margin {loss_bart_margin} ")
-        loss.backward()
-        if not args.no_clip_norm:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.clip_norm)
-        tr_loss += loss.item()
-        nb_tr_steps += 1
-        if loss == nan:
-            print(batch)
-        
-        optimizer_bart.step()
-        scheduler_bart.step()
-        optimizer_bart.zero_grad()
-
-        logging.info({"loss": loss})
-        logging.info({"text loss": txt_loss})
-        logging.info({"face name loss": face_name_loss})
-        logging.info({"margin loss": loss_bart_margin})
-
-
-    return tr_loss / nb_tr_steps
-
-
-def eval_epoch(model, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart, val_dataloader, DEVICE):
-    model.eval()
-    # clip_model.eval()
-    val_loss = 0
-    # val_clip_loss = 0
-    # val_contras_loss = 0
-    nb_val_steps = 0
-    out_dict = {}
-    for step, batch in enumerate(tqdm(val_dataloader, desc="Iteration")):
-        out_dict[step] = {}
-        
-        src_ids, tgt_ids, tgt_sent, tgt_ids_clip, img_tensors, face_emb, names_art_ids, = batch["article_ids"], batch["caption_ids"], batch["caption"], batch["caption_ids_clip"], batch["img_tensor"], batch["face_emb"], batch["names_art_ids"],
-        src_ids = src_ids.to(DEVICE)
-        # src_ner_mask_ids = src_ner_mask_ids.to(DEVICE)
-        tgt_ids = tgt_ids.to(DEVICE)
-        tgt_ids_clip = tgt_ids_clip.to(DEVICE)
-        img_tensors = img_tensors.to(DEVICE)
-        face_emb = face_emb.to(DEVICE)
-
-        names_art_ids = names_art_ids.to(DEVICE)
-
-        tgt_input = shift_tokens_right(tgt_ids, tokenizer.pad_token_id, tokenizer.eos_token_id)
-        src_mask = create_src_mask_bart(src_ids)
-        face_mask = create_src_mask_bart(face_emb[:, :, -1])
-        names_art_mask = create_src_mask_bart(names_art_ids)
-
-
-
-        if "," in args.gpu_ids:
-            img_feat,img_feat_cls,_ = extract_clip_img_feat(model.module.clip_model, img_tensors)
-        else:
-            img_feat,img_feat_cls,_ = extract_clip_img_feat(model.clip_model, img_tensors)
-
-
-        src_mask = create_src_mask_bart(src_ids)
-
-
-        if args.prompt_mlp_type == "clipcap":
-            output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat_cls, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-        else:
-            output = model(input_ids=src_ids, attention_mask=src_mask, decoder_input_ids=tgt_input, image_features=img_feat, face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-        logits = output["logits"]
-
-        out_dict[step]["logit_output"] = [tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(torch.argmax(logits[i], dim=-1))) for i in range(logits.shape[0])]
-
-        txt_loss = loss_fn(logits.reshape(-1, logits.shape[-1]), tgt_ids.reshape(-1))
-
-        loss = txt_loss
-        out_dict[step]["gt_cap"] = tgt_sent
-
-        if torch.cuda.device_count() > 1:
-            loss = loss.mean()
-        else:
-            loss = loss
-        val_loss += loss.item()
-        nb_val_steps += 1
-
-        logging.info({"validation loss": loss})
-    
-
-        # GEN CAPTION: 
-        beam_size = args.beam_size
-        max_length = args.max_length
-        if "," in args.gpu_ids:
-            if args.prompt_mlp_type == "clipcap":
-                gen_cap_ids = model.module.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat_cls,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-            else:
-                gen_cap_ids = model.module.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-        else:
-            if args.prompt_mlp_type == "clipcap":
-                gen_cap_ids = model.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat_cls,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-            else:
-                gen_cap_ids = model.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-
-        gen_cap = tokenizer.batch_decode(gen_cap_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-
-
-        gen_unidecode = gen_cap
-        gt_unidecode = tgt_sent[0]
-
-        caption = re.sub(r'[^\w\s]', '', gt_unidecode)
-        generation = re.sub(r'[^\w\s]', '', gen_unidecode)
-
-        bleu_scorer += (generation, [caption])
-        rouge_score = rouge_scorer.calc_score([generation], [caption])
-        rouge_scores.append(rouge_score)
-        cider_scorer += (generation, [caption])
-
-        stat = meteor_scorer._stat(generation, [caption])
-        eval_line += ' ||| {}'.format(stat)
-        count += 1
-
-        out_dict[step]["gt"] = gt_unidecode
-        out_dict[step]["gen"] = gen_unidecode
-    
-    meteor_scorer.meteor_p.stdin.write('{}\n'.format(eval_line).encode())
-    meteor_scorer.meteor_p.stdin.flush()
-    for _ in range(count):
-        meteor_scores.append(float(meteor_scorer.meteor_p.stdout.readline().strip()))
-    meteor_score = float(meteor_scorer.meteor_p.stdout.readline().strip())
-    meteor_scorer.lock.release()
-
-    blue_score, _ = bleu_scorer.compute_score(option='closest')
-    rouge_score = np.mean(np.array(rouge_scores))
-    cider_score, _ = cider_scorer.compute_score()
-
-
-    out_dict["bleu"] = {}
-    out_dict["bleu"] = {"bleu1":blue_score[0],"bleu2":blue_score[1],"bleu3":blue_score[2],"bleu4":blue_score[3]}
-    out_dict["other metrics"] = {}
-    out_dict["other metrics"] = {"rouge":rouge_score, "meteor":meteor_score, "cider":cider_score}
-    logging.info({"bleu": out_dict["bleu"], "other metrics": out_dict["other metrics"]})
-    return val_loss / nb_val_steps, out_dict
-
-
-def train(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart,
-          train_dataloader, val_dataloader, test_dataloader,
-          optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip,
-          model_name, DEVICE):
-    train_losses = []
-    val_losses = []
-
-    best_val_loss = float("inf")
-    epochs_no_improve = 0
-
-    best_ckpt_path = os.path.join(args.out_dir, model_name + ".pt")
-
-    # wandb.watch(model)
-    for epoch_i in range(int(args.num_epoch)):
-        train_loss = train_epoch(
-            bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart,
-            train_dataloader, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip,
-            epoch_i, DEVICE
+    bsz, tgt_len = input_ids_shape
+    mask = torch.full((tgt_len, tgt_len), torch.tensor(torch.finfo(dtype).min))
+    mask_cond = torch.arange(mask.size(-1))
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+    mask = mask.to(dtype)
+
+    if past_key_values_length > 0:
+        mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype), mask], dim=-1)
+    return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
+
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
+    """
+    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    """
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
+
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+
+    inverted_mask = 1.0 - expanded_mask
+
+    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
+
+
+class BartLearnedPositionalEmbedding(nn.Embedding):
+    """
+    This module learns positional embeddings up to a fixed maximum size.
+    """
+
+    def __init__(self, num_embeddings: int, embedding_dim: int):
+        # Bart is set up so that if padding_idx is specified then offset the embedding ids by 2
+        # and adjust num_embeddings appropriately. Other models don't have this hack
+        self.offset = 2
+        super().__init__(num_embeddings + self.offset, embedding_dim)
+
+    def forward(self, input_ids_shape: torch.Size, past_key_values_length: int = 0):
+        """`input_ids_shape` is expected to be [bsz x seqlen]."""
+        bsz, seq_len = input_ids_shape[:2]
+        positions = torch.arange(
+            past_key_values_length, past_key_values_length + seq_len, dtype=torch.long, device=self.weight.device
         )
+        return super().forward(positions + self.offset)
 
-        val_loss, out_dict = eval_epoch(
-            model, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart,
-            val_dataloader, DEVICE
-        )
 
-        logging.info({"epoch": epoch_i, "train_loss": train_loss, "val_loss": val_loss})
+class BartAttention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-        # ---- Check improvement ----
-        improved = val_loss < (best_val_loss - args.early_stop_min_delta)
-        if improved:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        is_decoder: bool = False,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.head_dim = embed_dim // num_heads
 
-            model.eval()
-            torch.save(model, best_ckpt_path)
-            with open(os.path.join(args.out_dir, f"{epoch_i}{model_name}v.json"), "w", encoding="utf-8") as f:
-                json.dump(out_dict, f, ensure_ascii=False, indent=4)
-            logging.info({"best_val_loss": best_val_loss, "best_epoch": epoch_i})
+        if (self.head_dim * num_heads) != self.embed_dim:
+            raise ValueError(
+                f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim}"
+                f" and `num_heads`: {num_heads})."
+            )
+        self.scaling = self.head_dim**-0.5
+        self.is_decoder = is_decoder
+
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
+        return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        key_value_states: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        layer_head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        """Input shape: Batch x Time x Channel"""
+
+        # if key_value_states are provided this layer is used as a cross-attention layer
+        # for the decoder
+        is_cross_attention = key_value_states is not None
+
+        bsz, tgt_len, _ = hidden_states.size()
+
+        # get query proj
+        query_states = self.q_proj(hidden_states) * self.scaling
+        # get key, value proj
+        if is_cross_attention and past_key_value is not None:
+            # reuse k,v, cross_attentions
+            key_states = past_key_value[0]
+            value_states = past_key_value[1]
+        elif is_cross_attention:
+            # cross_attentions
+            key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
+            value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
+        elif past_key_value is not None:
+            # reuse k, v, self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            key_states = torch.cat([past_key_value[0], key_states], dim=2)
+            value_states = torch.cat([past_key_value[1], value_states], dim=2)
         else:
-            # only count "no improve" after warmup, and if early stopping is enabled
-            if args.early_stop and epoch_i >= args.early_stop_warmup:
-                epochs_no_improve += 1
-                logging.info({"epochs_no_improve": epochs_no_improve})
+            # self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
 
-        # Always save last checkpoint
-        torch.save(model, os.path.join(args.out_dir, model_name + "last.pt"))
+        if self.is_decoder:
+            # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
+            # Further calls to cross_attention layer can then reuse all cross-attention
+            # key/value_states (first "if" case)
+            # if uni-directional self-attention (decoder) save Tuple(torch.Tensor, torch.Tensor) of
+            # all previous decoder key/value_states. Further calls to uni-directional self-attention
+            # can concat previous decoder key/value_states to current projected key/value_states (third "elif" case)
+            # if encoder bi-directional self-attention `past_key_value` is always `None`
+            past_key_value = (key_states, value_states)
 
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
+        proj_shape = (bsz * self.num_heads, -1, self.head_dim)
+        query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
+        key_states = key_states.view(*proj_shape)
+        value_states = value_states.view(*proj_shape)
 
-        # ---- Early stop ----
-        if args.early_stop and epoch_i >= args.early_stop_warmup and epochs_no_improve >= args.early_stop_patience:
-            logging.info({
-                "early_stop": True,
-                "stopped_epoch": epoch_i,
-                "best_val_loss": best_val_loss,
-                "best_ckpt": best_ckpt_path
-            })
-            print(f"[EARLY STOP] epoch={epoch_i} best_val_loss={best_val_loss:.6f} ckpt={best_ckpt_path}")
-            break
+        src_len = key_states.size(1)
+        attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
 
-    return train_losses, val_losses
-
-
-
-def gen_caption_from_loader_bart(model, data_loader, tokenizer, bleu_scorer, rouge_scorer, cider_scorer, meteor_scorer, beam_size, max_length, DEVICE):
-    rouge_scores = []
-    eval_line = 'EVAL'
-    meteor_scorer.lock.acquire()
-    count = 0
-    out_dict = {}
-    for step, batch in enumerate(tqdm(data_loader, desc="Iteration")):
-        out_dict[step] = {}
-
-        src_ids, tgt_sent, img_tensors, face_emb, names_art_ids, = batch["article_ids"], batch["caption"], batch["img_tensor"], batch["face_emb"], batch["names_art_ids"],
-        src_ids = src_ids.to(DEVICE)
-        img_tensors = img_tensors.to(DEVICE)
-        face_emb = face_emb.to(DEVICE)
-
-        names_art_ids = names_art_ids.to(DEVICE)
-
-        src_mask = create_src_mask_bart(src_ids)
-        face_mask = create_src_mask_bart(face_emb[:, :, -1])
-        names_art_mask = create_src_mask_bart(names_art_ids)
-
-
-        if "," in args.gpu_ids:
-            img_feat,img_feat_cls,_ = extract_clip_img_feat(model.module.clip_model, img_tensors)
-        else:
-            img_feat,img_feat_cls,_ = extract_clip_img_feat(model.clip_model, img_tensors)
-
-        src_mask = create_src_mask_bart(src_ids)
-        
-        ner_mask = torch.ones((args.test_batch_size, args.max_ner_type_len_gt))
-        ner_mask = ner_mask.to(DEVICE)
-
-        if "," in args.gpu_ids:
-            if args.prompt_mlp_type == "clipcap":
-                gen_cap_ids = model.module.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat_cls,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-            else:
-                gen_cap_ids = model.module.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-        else:
-            if args.prompt_mlp_type == "clipcap":
-                gen_cap_ids = model.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat_cls,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-            else:
-                gen_cap_ids = model.generate(input_ids=src_ids, attention_mask=src_mask, num_beams=beam_size, max_length=max_length, image_features=img_feat,  face_features=face_emb, face_mask=face_mask, name_ids=names_art_ids, name_mask=names_art_mask, add_ner_ffn=True)
-
-        gen_cap = tokenizer.batch_decode(gen_cap_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-
-        # gt_unidecode = unidecode.unidecode(tgt_sent[0])
-        # gen_unidecode = unidecode.unidecode(gen_cap)
-        gen_unidecode = gen_cap
-        gt_unidecode = tgt_sent[0]
-
-        # Remove punctuation
-        caption = re.sub(r'[^\w\s]', '', gt_unidecode)
-        generation = re.sub(r'[^\w\s]', '', gen_unidecode)
-
-        bleu_scorer += (generation, [caption])
-        rouge_score = rouge_scorer.calc_score([generation], [caption])
-        rouge_scores.append(rouge_score)
-        cider_scorer += (generation, [caption])
-
-        stat = meteor_scorer._stat(generation, [caption])
-        eval_line += ' ||| {}'.format(stat)
-        count += 1
-
-        out_dict[step]["gt"] = gt_unidecode
-        out_dict[step]["gen"] = gen_unidecode
-    
-    meteor_scorer.meteor_p.stdin.write('{}\n'.format(eval_line).encode())
-    meteor_scorer.meteor_p.stdin.flush()
-    for _ in range(count):
-        meteor_scores.append(float(meteor_scorer.meteor_p.stdout.readline().strip()))
-    meteor_score = float(meteor_scorer.meteor_p.stdout.readline().strip())
-    meteor_scorer.lock.release()
-
-    blue_score, _ = bleu_scorer.compute_score(option='closest')
-    rouge_score = np.mean(np.array(rouge_scores))
-    cider_score, _ = cider_scorer.compute_score()
-
-
-    out_dict["bleu"] = {}
-    out_dict["bleu"] = {"bleu1":blue_score[0],"bleu2":blue_score[1],"bleu3":blue_score[2],"bleu4":blue_score[3]}
-    out_dict["other metrics"] = {}
-    out_dict["other metrics"] = {"rouge":rouge_score, "meteor":meteor_score, "cider":cider_score}
-    return out_dict, blue_score[0], blue_score[1], blue_score[2], blue_score[3], rouge_score, meteor_score, cider_score
-
-
-
-def _stat(self, hypothesis_str, reference_list):
-    # SCORE ||| reference 1 words ||| reference n words ||| hypothesis words
-    hypothesis_str = hypothesis_str.replace('|||', '').replace('  ', ' ')
-    score_line = ' ||| '.join(
-        ('SCORE', ' ||| '.join(reference_list), hypothesis_str))
-    score_line = score_line.replace('\n', '').replace('\r', '')
-    self.meteor_p.stdin.write('{}\n'.format(score_line).encode())
-    self.meteor_p.stdin.flush()
-    return self.meteor_p.stdout.readline().decode().strip()
-
-
-if __name__ == "__main__":
-
-    import torch.optim as optim
-    from pycocoevalcap.bleu.bleu_scorer import BleuScorer
-    from pycocoevalcap.cider.cider_scorer import CiderScorer
-    from pycocoevalcap.meteor.meteor import Meteor
-    from pycocoevalcap.rouge.rouge import Rouge
-
-    import os, json, types, re, torch
-    from transformers import CLIPModel, CLIPProcessor
-    import numpy as np
-    from functools import partial
-    from tqdm import tqdm
-    from torch.utils.data import DataLoader
-    from torchvision import transforms
-    from transformers import (
-            AutoTokenizer, PreTrainedTokenizerFast,
-            BartForConditionalGeneration, get_linear_schedule_with_warmup)
-    from ViWiki_dataset import (
-            ViWikiDictDatasetEntityTypeFixLenEntPos,
-            collate_fn_viwiki_entity_type)
-    from model import BartForMultiModalGeneration
-    # --------------------------------------
-    seed_everything(args.seed)
-    torch.autograd.set_detect_anomaly(True)
-
-
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {DEVICE}")
-
-    logging.basicConfig(filename="training.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    def batch_softmax(phrase_region_match):
-        # phrase_region_match [B, B, span_len, R]: span_len: names, R: faces
-        batch_size, _, num_spans, _ = phrase_region_match.size()
-
-        # [B, B, span_len]
-        phrase_region_max = phrase_region_match.max(-1).values
-
-        # Logits [B, B]
-        phrase_region_scores = phrase_region_max.sum(-1)
-        # Normalize scores
-        scale = torch.tensor(num_spans).expand(batch_size).unsqueeze(1).expand((batch_size, batch_size))
-        scale = scale.to(phrase_region_scores.device)
-        logits = phrase_region_scores.div(scale)
-
-        targets = torch.arange(batch_size).to(logits.device)
-
-        return torch.nn.functional.cross_entropy(logits, targets)
-        
-
-    class BatchSoftmax(torch.nn.Module):
-        def __init__(self):
-            super(BatchSoftmax, self).__init__()
-
-        def forward(self, face_j, ner_j):
-            # print(f"[DEBUG] ner_j {ner_j.shape}")
-            # print(f"[DEBUG] face_j {face_j.shape}")
-            face_ner_match = torch.matmul(ner_j.unsqueeze(1), face_j.permute(0, 2, 1))
-            ner_face_match = torch.matmul(face_j.unsqueeze(1), ner_j.permute(0, 2, 1))
-            loss1 = batch_softmax(face_ner_match)
-            loss2 = batch_softmax(ner_face_match)
-            loss = loss1 + loss2
-            return loss
-    
-    
-    if args.offline_wandb:
-        os.environ["WANDB_MODE"] = "offline"
-
-    if args.plm_type.startswith("ainize"):
-        tokenizer = PreTrainedTokenizerFast.from_pretrained("ainize/bart-base-cnn")
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(args.plm_type)
-    if args.trained_clip == "no":
-        clip_path = r"/datastore/npl/ICEK/vacnic/vacnic_pretrained_model/clip-ViT-B-32/0_CLIPModel"
-        clip_model = CLIPModel.from_pretrained(
-                clip_path,
-                local_files_only=True
-            ).to("cuda")
-        clip_preprocess = CLIPProcessor.from_pretrained(
-                clip_path,
-                local_files_only=True
+        if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
+            raise ValueError(
+                f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
+                f" {attn_weights.size()}"
             )
 
-    print(f"[DEBUG] DONE LOAD PRETRAINED MODEL")
-    normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
-                                     std=[0.26862954, 0.26130258, 0.27577711])
+        if attention_mask is not None:
+            if attention_mask.size() != (bsz, 1, tgt_len, src_len):
+                raise ValueError(
+                    f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
+                )
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
+            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
-    model = BartForMultiModalGeneration.from_pretrained(args.plm_type, output_hidden_states=True, enc_fusion_layer=args.enc_fusion_layer, dim_common=args.dim_common, img_size=args.img_size, prompt_mlp_type=args.prompt_mlp_type, map_size=args.map_size, prompt_size=args.prompt_size, clip_model=clip_model, freeze_clip=args.freeze_clip, max_ner_type_len=args.max_ner_type_len, max_ner_type_len_gt=args.max_ner_type_len_gt, only_image=args.only_image, init_attn_weight=args.init_attn_weight)
-    bart_model = BartForConditionalGeneration.from_pretrained(args.plm_type, output_hidden_states=True)
-    bart_model = bart_model.to(DEVICE)
-    sanitize_model_weights(model)
-    for param in bart_model.parameters():
-        param.requires_grad = False
-    for param in bart_model.parameters():
-        if param.requires_grad:
-            print(param)
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
 
-    tokenizer.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>"]})
-    # noname_id = tokenizer.convert_tokens_to_ids("<NONAME>")  
-    model.resize_token_embeddings(len(tokenizer))
+        if layer_head_mask is not None:
+            if layer_head_mask.size() != (self.num_heads,):
+                raise ValueError(
+                    f"Head mask for a single layer should be of size {(self.num_heads,)}, but is"
+                    f" {layer_head_mask.size()}"
+                )
+            attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
-    # # 1. Check the config (less reliable)
-    # print(f"Model config vocab size: {model.config.vocab_size}")
+        if output_attentions:
+            # this operation is a bit awkward, but it's required to
+            # make sure that attn_weights keeps its gradient.
+            # In order to do so, attn_weights have to be reshaped
+            # twice and have to be reused in the following
+            attn_weights_reshaped = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, src_len)
+        else:
+            attn_weights_reshaped = None
 
-    # # 2. Check the actual embedding layer (most reliable)
-    # actual_model_vocab_size = model.get_input_embeddings().num_embeddings
-    # print(f"Model's ACTUAL embedding size: {actual_model_vocab_size}")
+        attn_probs = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
 
-    # # You can also check the shape directly
-    # shape_0 = model.get_input_embeddings().weight.shape[0]
-    # print(f"Model embedding layer shape[0]: {shape_0}")
-    # # This assertion should pass if everything is correct
-    # assert len(tokenizer) == actual_model_vocab_size
+        attn_output = torch.bmm(attn_probs, value_states)
 
-    if args.perturb:
-        bos_noise = torch.randn(1024)
-        model.model.shared.weight.data[0] = model.model.shared.weight.data[0] + bos_noise
+        if attn_output.size() != (bsz * self.num_heads, tgt_len, self.head_dim):
+            raise ValueError(
+                f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is"
+                f" {attn_output.size()}"
+            )
 
-    del clip_model
-    img_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize])
-    # print(len(tokenizer))  # Tokenizer vocab size
-    # print(model.config.vocab_size) 
-    print(f"[DEBUG] DONE LOAD BART MODEL")
+        attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        attn_output = attn_output.transpose(1, 2)
+
+        # Use the `embed_dim` from the config (stored in the class) rather than `hidden_state` because `attn_output` can be
+        # partitioned aross GPUs when using tensor-parallelism.
+        attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
+
+        attn_output = self.out_proj(attn_output)
+
+        return attn_output, attn_weights_reshaped, past_key_value
+
+
+class BartEncoderLayer(nn.Module):
+    def __init__(self, config: BartConfig, visual_feature_dim, text_feature_dim, dim_common, max_ner_type_len, max_ner_type_len_gt, only_image):
+        super().__init__()
+        self.embed_dim = config.d_model
+        self.self_attn = BartAttention(
+            embed_dim=self.embed_dim,
+            num_heads=config.encoder_attention_heads,
+            dropout=config.attention_dropout,
+        )
+        self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+        self.dropout = config.dropout
+        self.activation_fn = ACT2FN[config.activation_function]
+        self.activation_dropout = config.activation_dropout
+        self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
+        self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
+        self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+
+        #########################
+        # img ffn
+        self._linear_1up = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
+        self._linear_1down = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
+        self.img_layer_norm = nn.LayerNorm(self.embed_dim)
+        
+
+        self.only_image = only_image
+        if not only_image:
+            self.ner_map_up = nn.Linear(max_ner_type_len, 4*max_ner_type_len_gt)
+            self.ner_map_down = nn.Linear(4*max_ner_type_len_gt, max_ner_type_len_gt)
+            self.ner_map_layer_norm = nn.LayerNorm(self.embed_dim)
+            self.max_ner_type_len_gt = max_ner_type_len_gt
+
+            self.self_attn_img_name = BartAttention(
+                embed_dim=self.embed_dim,
+                num_heads=config.encoder_attention_heads,
+                dropout=config.attention_dropout,
+            )
+            self.img_name_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+
+            self._face_up = nn.Linear(self.embed_dim, 3072)
+            self._face_down = nn.Linear(3072, self.embed_dim)
+            self.face_layer_norm = nn.LayerNorm(self.embed_dim)
+
+            self.cross_attn_img_ner = BartAttention(
+                embed_dim=self.embed_dim,
+                num_heads=config.encoder_attention_heads,
+                dropout=config.attention_dropout,
+            )
+            self.img_ner_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+
+    def forward(
+        self,
+        hidden_states: torch.FloatTensor,
+        attention_mask: torch.FloatTensor,
+        layer_head_mask: torch.FloatTensor,
+        output_attentions: Optional[bool] = False,
+        hidden_states_img: torch.FloatTensor=None,
+        hidden_states_face: torch.FloatTensor=None,
+        hidden_states_ner: torch.FloatTensor=None,
+        face_name_mask_cross=None,
+        img_ner_mask_cross=None,
+        add_ner_ffn=True,
+        layer_idx: int=0,
+        fusion_layer:list=[],
+    ) -> Tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(seq_len, batch, embed_dim)`
+            attention_mask (`torch.FloatTensor`): attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            layer_head_mask (`torch.FloatTensor`): mask for attention heads in a given layer of size
+                `(encoder_attention_heads,)`.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+        """
     
+        if layer_idx in fusion_layer:
+            # img ffn
+            residual = hidden_states_img
+            hidden_states_img = self.activation_fn(self._linear_1up(hidden_states_img))
+            hidden_states_img = nn.functional.dropout(hidden_states_img, p=self.activation_dropout, training=self.training)
+            hidden_states_img = self._linear_1down(hidden_states_img)
+            hidden_states_img = nn.functional.dropout(hidden_states_img, p=self.dropout, training=self.training)
+            hidden_states_img = residual + hidden_states_img
+            hidden_states_img = self.img_layer_norm(hidden_states_img)
+            # print(hidden_states_img.size())
 
-    tokenizer_dataset = AutoTokenizer.from_pretrained(args.plm_type)
-    tokenizer_dataset.add_special_tokens({"additional_special_tokens":['<ENT>', "<NONAME>", '<PERSON>', "<ORGNORP>", "<GPELOC>"]})
-    
-    person_token_id = tokenizer_dataset.convert_tokens_to_ids('<PERSON>')
-    print(f"[DEBUG] PERSON ids: {person_token_id}")
-    def build_dataset(json_path,split):
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data_dict = json.load(f)
-        return ViWikiDictDatasetEntityTypeFixLenEntPos(
-                    data_dict,
-                    args.emb_dir,
-                    args.img_dir,
-                    args.art_dir,
-                    tokenizer_dataset,               
-                    use_clip_tokenizer=True,
-                    transform=img_transform,
-                    max_article_len=args.article_max_length,
-                    max_ner_type_len=args.max_ner_type_len,
-                    max_ner_type_len_gt=args.max_ner_type_len_gt,
-                    retrieved_sent=True,
-                    person_token_id=person_token_id,
-                    split=split,
-                    clip_processor = clip_preprocess,
-                    entity_token_start=args.ent_start_token, 
-                    entity_token_end=args.ent_end_token
+            if not self.only_image:
+                # face ffn
+                residual = hidden_states_face
+                hidden_states_face = self.activation_fn(self._face_up(hidden_states_face))
+                hidden_states_face = nn.functional.dropout(hidden_states_face, p=self.activation_dropout, training=self.training)
+                hidden_states_face = self._face_down(hidden_states_face)
+                hidden_states_face = nn.functional.dropout(hidden_states_face, p=self.dropout, training=self.training)
+                hidden_states_face = residual + hidden_states_face
+                hidden_states_face = self.face_layer_norm(hidden_states_face)
+
+                hidden_states_img_ner_kv = torch.cat((hidden_states_img, hidden_states_ner, hidden_states), dim=1)
+                if add_ner_ffn:
+                    # self attn name with face prefix
+                    residual=hidden_states_ner
+                    hidden_states_ner_face = torch.cat((hidden_states_face, hidden_states_ner), dim=1)
+                    hidden_states_ner, _, _ = self.self_attn_img_name(
+                        hidden_states=hidden_states_ner,
+                        key_value_states=hidden_states_ner_face,
+                        attention_mask=face_name_mask_cross,
+                        layer_head_mask=layer_head_mask,
+                        output_attentions=output_attentions,
                     )
-    train_data = build_dataset(args.train_json, "train")
-    val_data   = build_dataset(args.val_json, "val")
-    test_data  = build_dataset(args.test_json, "test")  
-    # train_data = build_dataset(args.train_json, "demo20")
-    # val_data   = build_dataset(args.val_json, "demo20")
-    # test_data  = build_dataset(args.test_json, "demo20")  
-    train_loader = DataLoader(train_data, args.train_batch_size,
-                        num_workers=args.num_workers, collate_fn=collate_fn_viwiki_entity_type)
+                    hidden_states_ner = residual + hidden_states_ner
+                    hidden_states_ner = self.img_name_attn_layer_norm(hidden_states_ner)
 
-    val_loader   = DataLoader(val_data,   args.val_batch_size,
-                            shuffle=False, num_workers=args.num_workers,
-                            collate_fn=collate_fn_viwiki_entity_type)
+                    # ner prefix ffn
+                    bsz, ner_len, hidden_dim = hidden_states_ner.size()
+                    hidden_states_ner_prefix = self.activation_fn(self.ner_map_up(hidden_states_ner.reshape((bsz, hidden_dim, ner_len))))
+                    hidden_states_ner_prefix = nn.functional.dropout(hidden_states_ner_prefix, p=self.activation_dropout, training=self.training)
+                    hidden_states_ner_prefix = self.ner_map_down(hidden_states_ner_prefix)
+                    hidden_states_ner_prefix = nn.functional.dropout(hidden_states_ner_prefix, p=self.dropout, training=self.training)
+                    hidden_states_ner_prefix = hidden_states_ner_prefix.reshape((bsz, self.max_ner_type_len_gt, hidden_dim))
+                    hidden_states_ner_prefix = self.ner_map_layer_norm(hidden_states_ner_prefix)
+                    
+                    # hidden_states_img_ner_kv = torch.cat((hidden_states_img, hidden_states_ner_prefix, hidden_states), dim=1)                    
+                    hidden_states_img_ner_kv = torch.cat((hidden_states_img, hidden_states_ner_prefix), dim=1)
 
-    test_loader  = DataLoader(test_data,  args.test_batch_size,
-                            shuffle=False, num_workers=args.num_workers,
-                            collate_fn=collate_fn_viwiki_entity_type)
-    print(f"[DEBUG] train size: {len(train_data)}val size: {len(val_data)}, test size = {len(test_data)}")
-    # logging.info({"train size":len(train_data), "val size": len(val_data), "test size": len(test_data)})
+            else:
+                # hidden_states_img_ner_kv = torch.cat((hidden_states_img, hidden_states), dim=1)
+                hidden_states_img_ner_kv = hidden_states_img
 
-    model, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip = prep_for_training(model, len(train_data), DEVICE)
-    print(f"[DEBUG] DONE PREP FOR TRAINING")
+            residual = hidden_states
+            attention_mask = attention_mask.cuda()
+            hidden_states, attn_weights, _ = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                layer_head_mask=layer_head_mask,
+                output_attentions=output_attentions,
+            )
+            hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+            hidden_states = residual + hidden_states
+            hidden_states = self.self_attn_layer_norm(hidden_states)
 
-    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id).to(DEVICE)
-    loss_img = torch.nn.CrossEntropyLoss()
-    loss_txt = torch.nn.CrossEntropyLoss()
-    loss_clip_bart = torch.nn.CrossEntropyLoss()
-    loss_margin = torch.nn.HingeEmbeddingLoss(margin=args.margin)
-    print(f"[DEBUG] DONE LOSS LOADING, START TRAINING")
 
-    train(bart_model, model, loss_margin, loss_fn, loss_img, loss_txt, loss_clip_bart, train_loader, val_loader, test_loader, optimizer_bart, optimizer_clip, scheduler_bart, scheduler_clip, 'first', DEVICE)
+            # cross attn
+            residual = hidden_states
+            hidden_states, _, _ = self.cross_attn_img_ner(
+                hidden_states=hidden_states,
+                key_value_states=hidden_states_img_ner_kv,
+                attention_mask = img_ner_mask_cross,
+                layer_head_mask=(layer_head_mask[layer_idx] if layer_head_mask is not None else None),
+                past_key_value=None,
+                output_attentions=output_attentions,
+            )
 
-    # Reload best checkpoint for final test-time generation (so you don't evaluate the "last" epoch).
-    best_ckpt = os.path.join(args.out_dir, "first.pt")
-    if os.path.exists(best_ckpt):
-        model = torch.load(best_ckpt, map_location=DEVICE)
-        model = model.to(DEVICE)
-        print(f"[DEBUG] Loaded best checkpoint: {best_ckpt}")
+            hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+            hidden_states = residual + hidden_states
+            hidden_states = self.img_ner_attn_layer_norm(hidden_states)
+        
+        else:
+            residual = hidden_states
+            attention_mask = attention_mask.cuda()
+            hidden_states, attn_weights, _ = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                layer_head_mask=layer_head_mask,
+                output_attentions=output_attentions,
+            )
+            hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+            hidden_states = residual + hidden_states
+            hidden_states = self.self_attn_layer_norm(hidden_states)
 
+        residual = hidden_states
+        hidden_states = self.activation_fn(self.fc1(hidden_states))
+        hidden_states = nn.functional.dropout(hidden_states, p=self.activation_dropout, training=self.training)
+        hidden_states = self.fc2(hidden_states)
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+        hidden_states = residual + hidden_states
+        hidden_states = self.final_layer_norm(hidden_states)
+
+        if hidden_states.dtype == torch.float16 and (
+            torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
+        ):
+            clamp_value = torch.finfo(hidden_states.dtype).max - 1000
+            hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (attn_weights,)
+        
+        if not self.only_image:
+            outputs += (hidden_states_face,)
+            outputs += (hidden_states_ner,)
+        outputs += (hidden_states_img,)
+
+        return outputs
+
+
+class BartDecoderLayer(nn.Module):
+    def __init__(self, config: BartConfig):
+        super().__init__()
+        self.embed_dim = config.d_model
+
+        self.self_attn = BartAttention(
+            embed_dim=self.embed_dim,
+            num_heads=config.decoder_attention_heads,
+            dropout=config.attention_dropout,
+            is_decoder=True,
+        )
+        self.dropout = config.dropout
+        self.activation_fn = ACT2FN[config.activation_function]
+        self.activation_dropout = config.activation_dropout
+
+        self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+        self.encoder_attn = BartAttention(
+            self.embed_dim,
+            config.decoder_attention_heads,
+            dropout=config.attention_dropout,
+            is_decoder=True,
+        )
+        self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+        self.fc1 = nn.Linear(self.embed_dim, config.decoder_ffn_dim)
+        self.fc2 = nn.Linear(config.decoder_ffn_dim, self.embed_dim)
+        self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+        layer_head_mask: Optional[torch.Tensor] = None,
+        cross_attn_layer_head_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = True,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`): attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            encoder_hidden_states (`torch.FloatTensor`):
+                cross attention input to the layer of shape `(batch, seq_len, embed_dim)`
+            encoder_attention_mask (`torch.FloatTensor`): encoder attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            layer_head_mask (`torch.FloatTensor`): mask for attention heads in a given layer of size
+                `(encoder_attention_heads,)`.
+            cross_attn_layer_head_mask (`torch.FloatTensor`): mask for cross-attention heads in a given layer of
+                size `(decoder_attention_heads,)`.
+            past_key_value (`Tuple(torch.FloatTensor)`): cached past key and value projection states
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+        """
+
+
+        residual = hidden_states
+
+        # Self Attention
+        # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
+        self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
+        # add present self-attn cache to positions 1,2 of present_key_value tuple
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            # key_value_states=hidden_states_img_ner_kv,
+            past_key_value=self_attn_past_key_value,
+            attention_mask=attention_mask,
+            layer_head_mask=layer_head_mask,
+            output_attentions=output_attentions,
+        )
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+        hidden_states = residual + hidden_states
+        hidden_states = self.self_attn_layer_norm(hidden_states)
+        # print("self",hidden_states.size())
+        # Cross-Attention Block
+        cross_attn_present_key_value = None
+        cross_attn_weights = None
+
+
+
+        if encoder_hidden_states is not None:
+
+            residual = hidden_states
+
+            # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
+            cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
+            encoder_attention_mask = encoder_attention_mask.cuda()
+            hidden_states, cross_attn_weights, cross_attn_present_key_value = self.encoder_attn(
+                hidden_states=hidden_states,
+                key_value_states=encoder_hidden_states,
+                attention_mask=encoder_attention_mask,
+                layer_head_mask=cross_attn_layer_head_mask,
+                past_key_value=cross_attn_past_key_value,
+                output_attentions=output_attentions,
+            )
+            hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+            hidden_states = residual + hidden_states
+            hidden_states = self.encoder_attn_layer_norm(hidden_states)
+            # print("cross",hidden_states.size())
+            # add cross-attn to positions 3,4 of present_key_value tuple
+            present_key_value = present_key_value + cross_attn_present_key_value
+        
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.activation_fn(self.fc1(hidden_states))
+        hidden_states = nn.functional.dropout(hidden_states, p=self.activation_dropout, training=self.training)
+        hidden_states = self.fc2(hidden_states)
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+        hidden_states = residual + hidden_states
+        hidden_states = self.final_layer_norm(hidden_states)
+        # print(hidden_states.size())
+        outputs = (hidden_states,)
+
+
+        
+        if output_attentions:
+            outputs += (self_attn_weights, cross_attn_weights)
+
+        if use_cache:
+            outputs += (present_key_value,)
+        
+        return outputs
+
+
+class BartPretrainedModel(PreTrainedModel, GenerationMixin):
+    config_class = BartConfig
+    base_model_prefix = "model"
+    supports_gradient_checkpointing = True
+    _keys_to_ignore_on_load_unexpected = [r"encoder.version", r"decoder.version"]
+
+    def _init_weights(self, module):
+        std = self.config.init_std
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=std)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=std)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+
+    def _set_gradient_checkpointing(self, module, value=False):
+        if isinstance(module, (BartDecoder, BartEncoder)):
+            module.gradient_checkpointing = value
+
+    @property
+    def dummy_inputs(self):
+        pad_token = self.config.pad_token_id
+        input_ids = torch.tensor([[0, 6, 10, 4, 2], [0, 8, 12, 2, pad_token]], device=self.device)
+        dummy_inputs = {
+            "attention_mask": input_ids.ne(pad_token),
+            "input_ids": input_ids,
+        }
+        return dummy_inputs
+
+
+class PretrainedBartModel(BartPretrainedModel):
+    def __init_subclass__(self):
+        warnings.warn(
+            "The class `PretrainedBartModel` has been depreciated, please use `BartPretrainedModel` instead.",
+            FutureWarning,
+        )
+
+
+BART_START_DOCSTRING = r"""
+    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
+    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
+    etc.)
+
+    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) subclass.
+    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
+    and behavior.
+
+    Parameters:
+        config ([`BartConfig`]):
+            Model configuration class with all the parameters of the model. Initializing with a config file does not
+            load the weights associated with the model, only the configuration. Check out the
+            [`~PreTrainedModel.from_pretrained`] method to load the model weights.
+"""
+
+BART_GENERATION_EXAMPLE = r"""
+    Summarization example:
+
+    ```python
+    >>> from transformers import BartTokenizer, BartForConditionalGeneration
+
+    >>> model = BartForConditionalGeneration.from_pretrained("facebook/bart-large-cnn")
+    >>> tokenizer = BartTokenizer.from_pretrained("facebook/bart-large-cnn")
+
+    >>> ARTICLE_TO_SUMMARIZE = (
+    ...     "PG&E stated it scheduled the blackouts in response to forecasts for high winds "
+    ...     "amid dry conditions. The aim is to reduce the risk of wildfires. Nearly 800 thousand customers were "
+    ...     "scheduled to be affected by the shutoffs which were expected to last through at least midday tomorrow."
+    ... )
+    >>> inputs = tokenizer([ARTICLE_TO_SUMMARIZE], max_length=1024, return_tensors="pt")
+
+    >>> # Generate Summary
+    >>> summary_ids = model.generate(inputs["input_ids"], num_beams=2, min_length=0, max_length=20)
+    >>> tokenizer.batch_decode(summary_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    'PG&E scheduled the blackouts in response to forecasts for high winds amid dry conditions'
+    ```
+
+    Mask filling example:
+
+    ```python
+    >>> from transformers import BartTokenizer, BartForConditionalGeneration
+
+    >>> tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+    >>> model = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
+
+    >>> TXT = "My friends are <mask> but they eat too many carbs."
+    >>> input_ids = tokenizer([TXT], return_tensors="pt")["input_ids"]
+    >>> logits = model(input_ids).logits
+
+    >>> masked_index = (input_ids[0] == tokenizer.mask_token_id).nonzero().item()
+    >>> probs = logits[0, masked_index].softmax(dim=0)
+    >>> values, predictions = probs.topk(5)
+
+    >>> tokenizer.decode(predictions).split()
+    ['not', 'good', 'healthy', 'great', 'very']
+    ```
+"""
+
+BART_INPUTS_DOCSTRING = r"""
+    Args:
+        input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+            Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide
+            it.
+
+            Indices can be obtained using [`BartTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            [`PreTrainedTokenizer.__call__`] for details.
+
+            [What are input IDs?](../glossary#input-ids)
+        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
+
+            - 1 for tokens that are **not masked**,
+            - 0 for tokens that are **masked**.
+
+            [What are attention masks?](../glossary#attention-mask)
+        decoder_input_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
+            Indices of decoder input sequence tokens in the vocabulary.
+
+            Indices can be obtained using [`BartTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            [`PreTrainedTokenizer.__call__`] for details.
+
+            [What are decoder input IDs?](../glossary#decoder-input-ids)
+
+            Bart uses the `eos_token_id` as the starting token for `decoder_input_ids` generation. If `past_key_values`
+            is used, optionally only the last `decoder_input_ids` have to be input (see `past_key_values`).
+
+            For translation and summarization training, `decoder_input_ids` should be provided. If no
+            `decoder_input_ids` is provided, the model will create this tensor by shifting the `input_ids` to the right
+            for denoising pre-training following the paper.
+        decoder_attention_mask (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
+            Default behavior: generate a tensor that ignores pad tokens in `decoder_input_ids`. Causal mask will also
+            be used by default.
+
+            If you want to change padding behavior, you should read [`modeling_bart._prepare_decoder_attention_mask`]
+            and modify to your needs. See diagram 1 in [the paper](https://arxiv.org/abs/1910.13461) for more
+            information on the default strategy.
+        head_mask (`torch.Tensor` of shape `(encoder_layers, encoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the attention modules in the encoder. Mask values selected in `[0, 1]`:
+
+            - 1 indicates the head is **not masked**,
+            - 0 indicates the head is **masked**.
+
+        decoder_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the attention modules in the decoder. Mask values selected in `[0, 1]`:
+
+            - 1 indicates the head is **not masked**,
+            - 0 indicates the head is **masked**.
+
+        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the cross-attention modules in the decoder. Mask values selected in `[0,
+            1]`:
+
+            - 1 indicates the head is **not masked**,
+            - 0 indicates the head is **masked**.
+
+        encoder_outputs (`tuple(tuple(torch.FloatTensor)`, *optional*):
+            Tuple consists of (`last_hidden_state`, *optional*: `hidden_states`, *optional*: `attentions`)
+            `last_hidden_state` of shape `(batch_size, sequence_length, hidden_size)`, *optional*) is a sequence of
+            hidden-states at the output of the last layer of the encoder. Used in the cross-attention of the decoder.
+        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
+            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
+
+            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
+            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
+
+            If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
+            don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
+            `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of shape
+            `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing `input_ids` you
+            can choose to directly pass an embedded representation. This is useful if you want more control over how to
+            convert `input_ids` indices into associated vectors than the model's internal embedding lookup matrix.
+        decoder_inputs_embeds (`torch.FloatTensor` of shape `(batch_size, target_sequence_length, hidden_size)`, *optional*):
+            Optionally, instead of passing `decoder_input_ids` you can choose to directly pass an embedded
+            representation. If `past_key_values` is used, optionally only the last `decoder_inputs_embeds` have to be
+            input (see `past_key_values`). This is useful if you want more control over how to convert
+            `decoder_input_ids` indices into associated vectors than the model's internal embedding lookup matrix.
+
+            If `decoder_input_ids` and `decoder_inputs_embeds` are both unset, `decoder_inputs_embeds` takes the value
+            of `inputs_embeds`.
+        use_cache (`bool`, *optional*):
+            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
+            `past_key_values`).
+        output_attentions (`bool`, *optional*):
+            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
+            tensors for more detail.
+        output_hidden_states (`bool`, *optional*):
+            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
+            more detail.
+        return_dict (`bool`, *optional*):
+            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+"""
+
+
+class BartEncoder(BartPretrainedModel):
+    """
+    Transformer encoder consisting of *config.encoder_layers* self attention layers. Each layer is a
+    [`BartEncoderLayer`].
+
+    Args:
+        config: BartConfig
+        embed_tokens (nn.Embedding): output embedding
+    """
+
+    def __init__(self, config: BartConfig, embed_tokens: Optional[nn.Embedding] = None, fusion_layer=None, dim_common=256, face_visual_feature_dim=512, img_size=2048, prompt_mlp_type="clipcap", map_size=[192, 256, 64, 16], prompt_size=10, max_ner_type_len=80, max_ner_type_len_gt=20, only_image=False):
+        super().__init__(config)
+         
+        self.dropout = config.dropout
+        self.layerdrop = config.encoder_layerdrop
+
+        self.embed_dim = config.d_model
+        # Some global variables
+        visual_feature_dim = img_size
+        text_feature_dim = config.d_model # 768
+
+        self.padding_idx = config.pad_token_id
+        self.max_source_positions = config.max_position_embeddings
+        self.embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
+
+        if embed_tokens is not None:
+            self.embed_tokens = embed_tokens
+        else:
+            self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
+
+        self.embed_positions = BartLearnedPositionalEmbedding(
+            config.max_position_embeddings,
+            config.d_model,
+        )
+        self.layers = nn.ModuleList([BartEncoderLayer(config, visual_feature_dim, text_feature_dim, dim_common, max_ner_type_len, max_ner_type_len_gt, only_image) for _ in range(config.encoder_layers)])
+        self.layernorm_embedding = nn.LayerNorm(config.d_model)
+
+        self.gradient_checkpointing = False
+        # Initialize weights and apply final processing
+        self.post_init()
+
+        # ==================== Modification Starts ====================
+
+        self.fusion_layer = fusion_layer
+
+        if prompt_mlp_type == "clipcap":
+            # ClipCap-style, map B*768 to B*prompt_size*768
+            self.prompt_mlp = MLPClipCap((768, (768 * prompt_size) // 2, 768 * prompt_size))
+        else:
+            self.prompt_mlp = MLP((map_size), hidden_size=768)
+        
+        self.prompt_size = prompt_size
+        self.prompt_mlp_type = prompt_mlp_type
+
+        if config.d_model == 1024:
+            self.visual_map = nn.Linear(768, 1024)
+        
+        self.only_image = only_image
+        if not only_image:
+            # ent embedding layer
+            # self.embed_tokens_ner = copy.deepcopy(self.embed_tokens)
+            self.embed_tokens_ner = nn.Embedding(40032, config.d_model, self.padding_idx)
+            self.embed_tokens_ner.weight.data[:40030, :] = self.embed_tokens.weight.data[:40030, :]
+
+            self.embed_positions_ner = copy.deepcopy(self.embed_positions)
+            
+            self.layernorm_embedding_ner = nn.LayerNorm(config.d_model)
+            # self._init_layernorm_weights()
+        self.only_image = only_image
+
+        self.max_ner_type_len = max_ner_type_len
+        self.max_ner_type_len_gt = max_ner_type_len_gt
+
+        self._linear_1 = nn.Linear(face_visual_feature_dim, dim_common) # K, V
+
+        self.embed_dim = config.d_model
+
+    def _init_layernorm_weights(self):
+        # Force gamma to 1.0 and beta to 0.0
+        nn.init.ones_(self.layernorm_embedding_ner.weight)
+        nn.init.zeros_(self.layernorm_embedding_ner.bias)
+        
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        image_features=None,
+        name_ids=None,
+        name_mask=None,
+        
+        face_features=None,
+        face_mask=None,
+        add_ner_ffn=True,
+    ) -> Union[Tuple, BaseModelOutput]:
+        r"""
+        Args:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you
+                provide it.
+
+                Indices can be obtained using [`BartTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+                [`PreTrainedTokenizer.__call__`] for details.
+
+                [What are input IDs?](../glossary#input-ids)
+            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
+
+                - 1 for tokens that are **not masked**,
+                - 0 for tokens that are **masked**.
+
+                [What are attention masks?](../glossary#attention-mask)
+            head_mask (`torch.Tensor` of shape `(encoder_layers, encoder_attention_heads)`, *optional*):
+                Mask to nullify selected heads of the attention modules. Mask values selected in `[0, 1]`:
+
+                - 1 indicates the head is **not masked**,
+                - 0 indicates the head is **masked**.
+
+            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+                Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+                This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+                than the model's internal embedding lookup matrix.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            output_hidden_states (`bool`, *optional*):
+                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
+                for more detail.
+            return_dict (`bool`, *optional*):
+                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+        """
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # retrieve input_ids and inputs_embeds
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            input_shape = input_ids.size()
+            input_ids = input_ids.view(-1, input_shape[-1])
+        elif inputs_embeds is not None:
+            input_shape = inputs_embeds.size()[:-1]
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+        input_ids = input_ids.cuda()
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+
+        embed_pos = self.embed_positions(input_shape)
+
+        hidden_states = inputs_embeds + embed_pos
+        hidden_states = self.layernorm_embedding(hidden_states)
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+
+
+        ##############################
+        if not self.only_image:
+            
+            inputs_embeds_ner = self.embed_tokens_ner(name_ids) * self.embed_scale
+            embed_pos_ner = self.embed_positions_ner(name_ids.size())
+            hidden_states_ner = inputs_embeds_ner + embed_pos_ner
+            hidden_states_ner = self.layernorm_embedding_ner(hidden_states_ner) 
+            hidden_states_ner = nn.functional.dropout(hidden_states_ner, p=self.dropout, training=self.training)
+
+            face_mask = torch.cat((face_mask, name_mask), dim=1)
+            if add_ner_ffn:
+                face_name_mask_cross = _expand_mask(face_mask, inputs_embeds.dtype, tgt_len=self.max_ner_type_len)
+            else:
+                face_name_mask_cross = _expand_mask(name_mask, inputs_embeds.dtype, tgt_len=self.max_ner_type_len_gt)
+
+            face_features = face_features.cuda()
+            hidden_states_face = self._linear_1(face_features)
+        else:
+            hidden_states_face = None
+            hidden_states_ner = None
+
+        hidden_states_img = self.prompt_mlp(image_features)
+        if self.prompt_mlp_type == "clipcap":
+            hidden_states_img = hidden_states_img.reshape(hidden_states_img.size()[0], self.prompt_size, 768)
+        if self.embed_dim == 1024:
+            hidden_states_img = self.visual_map(hidden_states_img)
+        
+        # import ipdb
+        # ipdb.set_trace()
+        img_mask = torch.ones((hidden_states_img.size(0), hidden_states_img.size(1))).to(hidden_states.device)
+        # print(image_features.size(), img_mask.size())
+
+        # print(img_mask_cross.size(), input_shape, ner_mask.size())
+        
+        if self.only_image:
+            img_ner_mask_cross = _expand_mask(img_mask, inputs_embeds.dtype, tgt_len=input_ids.size()[-1])
+            
+            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype)
+        else:
+            ner_mask = torch.ones((hidden_states_ner.size(0), self.max_ner_type_len_gt)).to(inputs_embeds.device)
+
+            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype)
+            
+            img_ner_mask_cross = _expand_mask(torch.cat((img_mask, ner_mask),dim=1), inputs_embeds.dtype, tgt_len=input_ids.size()[-1])
+            #############################
+
+        # # expand attention_mask
+        # if attention_mask is not None:
+        #     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+        #     attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype)
+
+        encoder_states = () if output_hidden_states else None
+        all_attentions = () if output_attentions else None
+
+        # check if head_mask has a correct number of layers specified if desired
+        if head_mask is not None:
+            if head_mask.size()[0] != (len(self.layers)):
+                raise ValueError(
+                    f"The head_mask should be specified for {len(self.layers)} layers, but it is for"
+                    f" {head_mask.size()[0]}."
+                )
+
+        for idx, encoder_layer in enumerate(self.layers):
+            if output_hidden_states:
+                encoder_states = encoder_states + (hidden_states,)
+            # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
+            dropout_probability = random.uniform(0, 1)
+            if self.training and (dropout_probability < self.layerdrop):  # skip the layer
+                layer_outputs = (None, None)
+            else:
+                if self.gradient_checkpointing and self.training:
+
+                    def create_custom_forward(module):
+                        def custom_forward(*inputs):
+                            return module(*inputs, output_attentions)
+
+                        return custom_forward
+
+                    layer_outputs = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(encoder_layer),
+                        hidden_states,
+                        attention_mask,
+                        (head_mask[idx] if head_mask is not None else None),
+                        hidden_states_img,
+                        hidden_states_face,
+                        hidden_states_ner,
+                        face_name_mask_cross,
+                        img_ner_mask_cross,
+                        add_ner_ffn,
+                        idx,
+                        self.fusion_layer
+                    )
+                
+                else:
+                    layer_outputs = encoder_layer(
+                        hidden_states,
+                        attention_mask,
+                        layer_head_mask=(head_mask[idx] if head_mask is not None else None),
+                        output_attentions=output_attentions,
+                        hidden_states_img=hidden_states_img,
+                        hidden_states_face=hidden_states_face,
+                        hidden_states_ner=hidden_states_ner,
+                        face_name_mask_cross=face_name_mask_cross,
+                        img_ner_mask_cross=img_ner_mask_cross,
+                        add_ner_ffn=add_ner_ffn,
+                        layer_idx=idx,
+                        fusion_layer=self.fusion_layer
+                    )
+
+                hidden_states = layer_outputs[0]
+                if not self.only_image:
+                    hidden_states_face = layer_outputs[-3]
+                    hidden_states_ner = layer_outputs[-2]
+                else:
+                    hidden_states_face = None
+                hidden_states_img = layer_outputs[-1]
+                
+            if output_attentions:
+                all_attentions = all_attentions + (layer_outputs[1],)
+
+        if output_hidden_states:
+            encoder_states = encoder_states + (hidden_states,)
+
+        if not return_dict:
+            return tuple(v for v in [hidden_states, encoder_states, all_attentions] if v is not None)
+
+        return BaseModelOutput(
+            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions, hidden_states_img=hidden_states_img, hidden_states_ner=hidden_states_ner, hidden_states_face=hidden_states_face
+        )
+
+
+class BartDecoder(BartPretrainedModel):
+    """
+    Transformer decoder consisting of *config.decoder_layers* layers. Each layer is a [`BartDecoderLayer`]
+
+    Args:
+        config: BartConfig
+        embed_tokens (nn.Embedding): output embedding
+    """
+
+    def __init__(self, config: BartConfig, embed_tokens: Optional[nn.Embedding] = None,):
+        super().__init__(config)
+        self.dropout = config.dropout
+        self.layerdrop = config.decoder_layerdrop
+        self.padding_idx = config.pad_token_id
+        self.max_target_positions = config.max_position_embeddings
+        self.embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
+
+        if embed_tokens is not None:
+            self.embed_tokens = embed_tokens
+        else:
+            self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
+
+        self.embed_positions = BartLearnedPositionalEmbedding(
+            config.max_position_embeddings,
+            config.d_model,
+        )
+        self.layers = nn.ModuleList([BartDecoderLayer(config) for _ in range(config.decoder_layers)])
+        # for i in range(len(self.layers)):
+        #     if i in freeze_layer:
+        #         for param in self.layers[i].parameters():
+        #             param.requires_grad = False
+        self.layernorm_embedding = nn.LayerNorm(config.d_model)
+
+        self.gradient_checkpointing = False
+        # Initialize weights and apply final processing
+        self.post_init()
+
+
+        # self._linear_1 = nn.Linear(face_visual_feature_dim, dim_common) # K, V
+
+
+        self.embed_dim = config.d_model
+
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+        # create causal mask
+        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+        combined_attention_mask = None
+        if input_shape[-1] > 1:
+            combined_attention_mask = _make_causal_mask(
+                input_shape, inputs_embeds.dtype, past_key_values_length=past_key_values_length
+            ).to(inputs_embeds.device)
+
+        if attention_mask is not None:
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1])
+            combined_attention_mask = (
+                expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+            )
+
+        return combined_attention_mask
+
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.LongTensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        cross_attn_head_mask: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
+        r"""
+        Args:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you
+                provide it.
+
+                Indices can be obtained using [`BartTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+                [`PreTrainedTokenizer.__call__`] for details.
+
+                [What are input IDs?](../glossary#input-ids)
+            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
+
+                - 1 for tokens that are **not masked**,
+                - 0 for tokens that are **masked**.
+
+                [What are attention masks?](../glossary#attention-mask)
+            encoder_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
+                Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention
+                of the decoder.
+            encoder_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
+                Mask to avoid performing cross-attention on padding tokens indices of encoder input_ids. Mask values
+                selected in `[0, 1]`:
+
+                - 1 for tokens that are **not masked**,
+                - 0 for tokens that are **masked**.
+
+                [What are attention masks?](../glossary#attention-mask)
+            head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+                Mask to nullify selected heads of the attention modules. Mask values selected in `[0, 1]`:
+
+                - 1 indicates the head is **not masked**,
+                - 0 indicates the head is **masked**.
+
+            cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+                Mask to nullify selected heads of the cross-attention modules in the decoder to avoid performing
+                cross-attention on hidden heads. Mask values selected in `[0, 1]`:
+
+                - 1 indicates the head is **not masked**,
+                - 0 indicates the head is **masked**.
+
+            past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+                Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of
+                shape `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of
+                shape `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
+
+                Contains pre-computed hidden-states (key and values in the self-attention blocks and in the
+                cross-attention blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
+
+                If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those
+                that don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of
+                all `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of
+                shape `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing
+                `input_ids` you can choose to directly pass an embedded representation. This is useful if you want more
+                control over how to convert `input_ids` indices into associated vectors than the model's internal
+                embedding lookup matrix.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            output_hidden_states (`bool`, *optional*):
+                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
+                for more detail.
+            return_dict (`bool`, *optional*):
+                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+        """
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # retrieve input_ids and inputs_embeds
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
+        elif input_ids is not None:
+            input_shape = input_ids.size()
+            input_ids = input_ids.view(-1, input_shape[-1])
+        elif inputs_embeds is not None:
+            input_shape = inputs_embeds.size()[:-1]
+        else:
+            raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
+
+        # past_key_values_length
+        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        input_ids = input_ids.cuda()
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+        
+        # embed positions
+        positions = self.embed_positions(input_shape, past_key_values_length)
+
+        hidden_states = inputs_embeds + positions
+        hidden_states = self.layernorm_embedding(hidden_states)
+
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
+
+
+        attention_mask = self._prepare_decoder_attention_mask(
+            attention_mask, input_shape, inputs_embeds, past_key_values_length
+        )
+
+
+        # expand encoder attention mask
+        if encoder_hidden_states is not None and encoder_attention_mask is not None:
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+            encoder_attention_mask = _expand_mask(encoder_attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1])
+            
+            
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
+        next_decoder_cache = () if use_cache else None
+
+        # check if head_mask/cross_attn_head_mask has a correct number of layers specified if desired
+        for attn_mask, mask_name in zip([head_mask, cross_attn_head_mask], ["head_mask", "cross_attn_head_mask"]):
+            if attn_mask is not None:
+                if attn_mask.size()[0] != (len(self.layers)):
+                    raise ValueError(
+                        f"The `{mask_name}` should be specified for {len(self.layers)} layers, but it is for"
+                        f" {head_mask.size()[0]}."
+                    )
+
+        for idx, decoder_layer in enumerate(self.layers):
+            # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            dropout_probability = random.uniform(0, 1)
+            if self.training and (dropout_probability < self.layerdrop):
+                continue
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+
+            if self.gradient_checkpointing and self.training:
+
+                if use_cache:
+                    logger.warning(
+                        "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                    )
+                    use_cache = False
+
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        # None for past_key_value
+                        return module(*inputs, output_attentions, use_cache)
+
+                    return custom_forward
+
+                layer_outputs = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(decoder_layer),
+                    hidden_states,
+                    attention_mask,
+                    encoder_hidden_states,
+                    encoder_attention_mask,
+                    head_mask[idx] if head_mask is not None else None,
+                    cross_attn_head_mask[idx] if cross_attn_head_mask is not None else None,
+                    None,
+                )
+            else:
+
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                    layer_head_mask=(head_mask[idx] if head_mask is not None else None),
+                    cross_attn_layer_head_mask=(
+                        cross_attn_head_mask[idx] if cross_attn_head_mask is not None else None
+                    ),
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                )
+            hidden_states = layer_outputs[0]
+            
+            if use_cache:
+                next_decoder_cache += (layer_outputs[3 if output_attentions else 1],)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+                if encoder_hidden_states is not None:
+                    all_cross_attentions += (layer_outputs[2],)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = next_decoder_cache if use_cache else None
+        if not return_dict:
+            return tuple(
+                v
+                for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions]
+                if v is not None
+            )
+        
+
+        return BaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+            cross_attentions=all_cross_attentions,
+            hidden_states_face=None,
+            hidden_states_ner=None,
+            hidden_states_img=None,
+        )
+
+
+
+def pool(last_hidden_states, attention_mask):
+    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+    emb = last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+    # replace nan with 1. nan occurs when attention_mask is all zero, i.e. no ner postiion in article
+    emb = torch.nan_to_num(emb, nan=1.0)
+    return emb
+
+
+def pool_replace(last_hidden_states, attention_mask, img_feat_map):
+    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+    emb = last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+    for i in range(emb.size()[0]):
+        if torch.isnan(emb[i][0]):
+            # print(f"img_feat_map:{img_feat_map[i]}")
+            emb[i] = img_feat_map[i].detach().cpu().to(emb.device)
+            # print(emb)
+    return emb
+
+
+@add_start_docstrings(
+    "The bare BART Model outputting raw hidden-states without any specific head on top.",
+    BART_START_DOCSTRING,
+)
+class BartModel(BartPretrainedModel):
+    def __init__(self, config: BartConfig, enc_fusion_layer=None, dim_common=256, img_size=2048, prompt_mlp_type="clipcap", map_size=[192, 256, 64, 16], prompt_size=10, max_ner_type_len=80, max_ner_type_len_gt=20, only_image=False):
+        super().__init__(config)
+
+        padding_idx, vocab_size = config.pad_token_id, config.vocab_size
+        self.shared = nn.Embedding(vocab_size, config.d_model, padding_idx)
+
+        self.encoder = BartEncoder(config, embed_tokens=self.shared, fusion_layer=enc_fusion_layer, dim_common=dim_common, img_size=img_size, prompt_mlp_type=prompt_mlp_type, map_size=map_size, prompt_size=prompt_size, max_ner_type_len=max_ner_type_len, max_ner_type_len_gt=max_ner_type_len_gt, only_image=only_image)
+        self.decoder = BartDecoder(config, self.shared)
+
+        
+        self.embed_dim = config.d_model
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.shared
+
+    def set_input_embeddings(self, value):
+        self.shared = value
+        self.encoder.embed_tokens = self.shared
+        self.decoder.embed_tokens = self.shared
+
+    def get_encoder(self):
+        return self.encoder
+
+    def get_decoder(self):
+        return self.decoder
+
+    @add_start_docstrings_to_model_forward(BART_INPUTS_DOCSTRING)
+    @add_code_sample_docstrings(
+        processor_class=_TOKENIZER_FOR_DOC,
+        checkpoint=_CHECKPOINT_FOR_DOC,
+        output_type=Seq2SeqModelOutput,
+        config_class=_CONFIG_FOR_DOC,
+        expected_output=_EXPECTED_OUTPUT_SHAPE,
+    )
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        decoder_input_ids: Optional[torch.LongTensor] = None,
+        decoder_attention_mask: Optional[torch.LongTensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        decoder_head_mask: Optional[torch.Tensor] = None,
+        cross_attn_head_mask: Optional[torch.Tensor] = None,
+        encoder_outputs: Optional[List[torch.FloatTensor]] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        image_features=None,
+        
+        face_features=None,
+        face_mask=None,
+        name_ids=None,
+        name_mask=None,
+
+        add_ner_ffn=True,
+
+    ) -> Union[Tuple, Seq2SeqModelOutput]:
     
-    
-    bleu_scorer = BleuScorer(n=4)
-    rouge_scorer = Rouge()
-    rouge_scores = []
-    cider_scorer = CiderScorer(n=4, sigma=6.0)
-    meteor_scorer = Meteor()
-    meteor_scorer._stat = types.MethodType(_stat, meteor_scorer)
-    meteor_scores = []
+        # different to other models, Bart automatically creates decoder_input_ids from
+        # input_ids if no decoder_input_ids are provided
+        if decoder_input_ids is None and decoder_inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError(
+                    "If no `decoder_input_ids` or `decoder_inputs_embeds` are "
+                    "passed, `input_ids` cannot be `None`. Please pass either "
+                    "`input_ids` or `decoder_input_ids` or `decoder_inputs_embeds`."
+                )
 
-    test_out_dict, blue1, blue2, blue3, blue4, rouge_score, meteor_score, cider_score = gen_caption_from_loader_bart(model, test_loader, tokenizer, bleu_scorer, rouge_scorer, cider_scorer, meteor_scorer, args.beam_size, args.max_length, DEVICE)
-    with open(os.path.join(args.out_dir, 'first'+"last.json"), "w", encoding="utf-8") as f:
-        json.dump(test_out_dict, f, ensure_ascii=False, indent=4)
-    
-    logging.info({"bleu1":blue1, "bleu2":blue2, "bleu3":blue3, "bleu4":blue4, "rouge":rouge_score, "meteor":meteor_score, "cider":cider_score})
+            decoder_input_ids = shift_tokens_right(
+                input_ids, self.config.pad_token_id, self.config.decoder_start_token_id
+            )
 
-    tokenizer.save_pretrained(args.out_dir)
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # image_features = self.prompt_mlp(image_features)
+        # if self.prompt_mlp_type == "clipcap":
+        #     image_features = image_features.reshape(image_features.size()[0], self.prompt_size, 768)
+        # if self.embed_dim == 1024:
+        #     image_features = self.visual_map(image_features)
+        # check_input_tensor("input_ids", input_ids)
+        # check_input_tensor("attention_mask", attention_mask)
+        # check_input_tensor("head_mask", head_mask)
+        # check_input_tensor("inputs_embeds", inputs_embeds)
+        # check_input_tensor("output_attentions", output_attentions)
+        # check_input_tensor("output_hidden_states", output_hidden_states)
+        # check_input_tensor("image_features", image_features)
+        # check_input_tensor("name_ids", name_ids)
+        # check_input_tensor("name_mask", name_mask)
+        # check_input_tensor("face_features", face_features)
+        # check_input_tensor("face_mask", face_mask)
+        if encoder_outputs is None:
+            encoder_outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                image_features=image_features,
+                name_ids=name_ids,
+                name_mask=name_mask,
+                face_features=face_features,
+                face_mask=face_mask,
+                add_ner_ffn=add_ner_ffn
+            )
+
+        # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
+        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=encoder_outputs["last_hidden_state"],
+                hidden_states=encoder_outputs["hidden_states"] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs["attentions"] if len(encoder_outputs) > 2 else None,
+                hidden_states_img=encoder_outputs["hidden_states_img"],
+                hidden_states_ner=encoder_outputs["hidden_states_ner"],
+                hidden_states_face=encoder_outputs["hidden_states_face"],
+            )
+
+        # debug_model_output(encoder_outputs, step_name="final_encoder_output")
+
+        # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_outputs[0],
+            encoder_attention_mask=attention_mask,
+            head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+
+        if not return_dict:
+            return decoder_outputs + encoder_outputs
+
+        return Seq2SeqModelOutput(
+            last_hidden_state=decoder_outputs.last_hidden_state,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+            hidden_states_face=encoder_outputs[-1],
+            hidden_states_ner=encoder_outputs[-2],
+            hidden_states_img=encoder_outputs[-3]
+        )
+
+
+def init_attn_weight_encoder(encoder):
+    layers = encoder.layers
+    for i in range(len(layers)):
+        layers[i].self_attn_img_name.q_proj.weight = layers[i].self_attn.q_proj.weight
+        layers[i].self_attn_img_name.k_proj.weight = layers[i].self_attn.k_proj.weight
+        layers[i].self_attn_img_name.v_proj.weight = layers[i].self_attn.v_proj.weight
+        layers[i].self_attn_img_name.out_proj.weight = layers[i].self_attn.out_proj.weight
+
+        layers[i].cross_attn_img_ner.q_proj.weight = layers[i].self_attn.q_proj.weight
+        layers[i].cross_attn_img_ner.k_proj.weight = layers[i].self_attn.k_proj.weight
+        layers[i].cross_attn_img_ner.v_proj.weight = layers[i].self_attn.v_proj.weight
+        layers[i].cross_attn_img_ner.out_proj.weight = layers[i].self_attn.out_proj.weight
+
+        
+
+
+@add_start_docstrings(
+    "The BART Model with a language modeling head. Can be used for summarization.", BART_START_DOCSTRING
+)
+class BartForMultiModalGeneration(BartPretrainedModel):
+    base_model_prefix = "model"
+    _keys_to_ignore_on_load_missing = [r"final_logits_bias", r"lm_head.weight"]
+
+    def __init__(self, config: BartConfig, enc_fusion_layer=None, dim_common=256, img_size=2048, prompt_mlp_type="clipcap", map_size=[192, 256, 64, 16], prompt_size=10, clip_model=None, freeze_clip=False, max_ner_type_len=80, max_ner_type_len_gt=20, only_image=False, init_attn_weight=False):
+        super().__init__(config)
+        self.model = BartModel(config, enc_fusion_layer, dim_common, img_size, prompt_mlp_type, map_size, prompt_size, max_ner_type_len, max_ner_type_len_gt, only_image)
+        self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
+        self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+        
+        # self.clip_model = clip_model.to(self.model.device)
+        self.clip_model = clip_model
+        if freeze_clip:
+            for param in self.clip_model.parameters():
+                param.requires_grad = False
+        # self.fc_clip = nn.Linear(512, config.d_model)
+
+        if init_attn_weight:
+            init_attn_weight_encoder(self.model.encoder)
+
+    def get_encoder(self):
+        return self.model.get_encoder()
+
+    def get_decoder(self):
+        return self.model.get_decoder()
+
+    def resize_token_embeddings(self, new_num_tokens: int) -> nn.Embedding:
+        new_embeddings = super().resize_token_embeddings(new_num_tokens)
+        self._resize_final_logits_bias(new_num_tokens)
+        return new_embeddings
+
+    def _resize_final_logits_bias(self, new_num_tokens: int) -> None:
+        old_num_tokens = self.final_logits_bias.shape[-1]
+        if new_num_tokens <= old_num_tokens:
+            new_bias = self.final_logits_bias[:, :new_num_tokens]
+        else:
+            extra_bias = torch.zeros((1, new_num_tokens - old_num_tokens), device=self.final_logits_bias.device)
+            new_bias = torch.cat([self.final_logits_bias, extra_bias], dim=1)
+        self.register_buffer("final_logits_bias", new_bias)
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    @add_start_docstrings_to_model_forward(BART_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
+    @add_end_docstrings(BART_GENERATION_EXAMPLE)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        decoder_input_ids: Optional[torch.LongTensor] = None,
+        decoder_attention_mask: Optional[torch.LongTensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        decoder_head_mask: Optional[torch.Tensor] = None,
+        cross_attn_head_mask: Optional[torch.Tensor] = None,
+        encoder_outputs: Optional[List[torch.FloatTensor]] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        image_features=None,
+        face_features=None,
+        face_mask=None,
+        name_ids=None,
+        name_mask=None,
+        add_ner_ffn=True,
+    ) -> Union[Tuple, Seq2SeqLMOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if labels is not None:
+            if use_cache:
+                logger.warning("The `use_cache` argument is changed to `False` since `labels` is provided.")
+            use_cache = False
+            if decoder_input_ids is None and decoder_inputs_embeds is None:
+                decoder_input_ids = shift_tokens_right(
+                    labels, self.config.pad_token_id, self.config.decoder_start_token_id
+                )
+
+        outputs = self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            encoder_outputs=encoder_outputs,
+            decoder_attention_mask=decoder_attention_mask,
+            head_mask=head_mask,
+            decoder_head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            decoder_inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            image_features=image_features,
+            
+            face_features=face_features,
+            face_mask=face_mask,
+            name_ids=name_ids,
+            name_mask=name_mask,
+            add_ner_ffn=add_ner_ffn,
+        )
+        lm_logits = self.lm_head(outputs[0]) + self.final_logits_bias
+
+        masked_lm_loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()
+            masked_lm_loss = loss_fct(lm_logits.view(-1, self.config.vocab_size), labels.view(-1))
+            
+        if not return_dict:
+            output = (lm_logits,) + outputs[1:]
+            return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
+
+        return Seq2SeqLMOutput(
+            loss=masked_lm_loss,
+            logits=lm_logits,
+            past_key_values=outputs.past_key_values,
+            decoder_hidden_states=outputs.decoder_hidden_states,
+            decoder_attentions=outputs.decoder_attentions,
+            cross_attentions=outputs.cross_attentions,
+            encoder_last_hidden_state=outputs.encoder_last_hidden_state,
+            encoder_hidden_states=outputs.encoder_hidden_states,
+            encoder_attentions=outputs.encoder_attentions,
+            hidden_states_face=outputs.hidden_states_face,
+            hidden_states_ner=outputs.hidden_states_ner,
+            hidden_states_img=outputs.hidden_states_img,
+        )
+
+    def prepare_inputs_for_generation(
+        self,
+        decoder_input_ids,
+        image_features,
+        name_ids,
+        name_mask,
+        add_ner_ffn,
+        face_features,
+        face_mask,
+        past=None,
+        attention_mask=None,
+        head_mask=None,
+        decoder_head_mask=None,
+        cross_attn_head_mask=None,
+        use_cache=None,
+        encoder_outputs=None,
+        **kwargs
+    ):
+        # cut decoder_input_ids if past is used
+        if past is not None:
+            decoder_input_ids = decoder_input_ids[:, -1:]
+
+        return {
+            "input_ids": None,  # encoder_outputs is defined. input_ids not needed
+            "image_features":image_features,
+            "name_ids":name_ids,
+            "name_mask":name_mask,
+            "add_ner_ffn":add_ner_ffn,
+            "face_features":face_features,
+            "face_mask":face_mask,
+            "encoder_outputs": encoder_outputs,
+            "past_key_values": past,
+            "decoder_input_ids": decoder_input_ids,
+            "attention_mask": attention_mask,
+            "head_mask": head_mask,
+            "decoder_head_mask": decoder_head_mask,
+            "cross_attn_head_mask": cross_attn_head_mask,
+            "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
+        }
+
+    def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
+        return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
+
+    @staticmethod
+    def _reorder_cache(past, beam_idx):
+        reordered_past = ()
+        for layer_past in past:
+            # cached cross_attention states don't have to be reordered -> they are always the same
+            reordered_past += (
+                tuple(past_state.index_select(0, beam_idx) for past_state in layer_past[:2]) + layer_past[2:],
+            )
+        return reordered_past
+
+def get_n_params(model):
+    pp=0
+    for p in list(model.parameters()):
+        nn=1
+        for s in list(p.size()):
+            nn = nn*s
+        pp += nn
+    return pp
+
+if __name__ == "__main__":
+    # prompt_mlp = MLP((192, (768 * 10) // 2, 768 * 10))
+    prompt_mlp = MLP(([192, 256, 64, 16]), hidden_size=768)
+    print(prompt_mlp)
+    print(get_n_params(prompt_mlp))
+    prompt_mlp(torch.randn(16,192,768))
+    prompt_mlp_clipcap = MLPClipCap((768, (768 * 10) // 2, 768 * 10))
+    print(prompt_mlp_clipcap)
+    print(get_n_params(prompt_mlp_clipcap))
+    prompt_mlp_clipcap(torch.randn(16, 768))
