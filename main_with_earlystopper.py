@@ -11,11 +11,11 @@ parser.add_argument("--seed", type=str, default=684331)
 parser.add_argument("--gpu_ids", type=str, default="1")
 parser.add_argument("--num_workers", type=int, default=4)
 # TEST DATASET
-parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
+# parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
 # parser.add_argument("--val_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
 # parser.add_argument("--test_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/demo20.json')
 # NEW DATASET
-# parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/train.json')
+parser.add_argument("--train_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/train.json')
 parser.add_argument("--val_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/val.json')
 parser.add_argument("--test_json", type=str, default=r'/datastore/npl/ICEK/vacnic/data/test.json')
 
@@ -457,11 +457,11 @@ def train_epoch(bart_model, model, loss_margin, loss_fn, loss_img_clip, loss_txt
         optimizer_bart.step()
         scheduler_bart.step()
         optimizer_bart.zero_grad()
-
-        logging.info({"loss": loss})
-        logging.info({"text loss": txt_loss})
-        logging.info({"face name loss": face_name_loss})
-        logging.info({"margin loss": loss_bart_margin})
+        if (nb_tr_steps % 100) == 0:
+            logging.info({"loss": loss})
+            logging.info({"text loss": txt_loss})
+            logging.info({"face name loss": face_name_loss})
+            logging.info({"margin loss": loss_bart_margin})
 
 
     return tr_loss / nb_tr_steps
@@ -483,6 +483,9 @@ def eval_epoch(model, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart, val
     meteor_scorer = Meteor()
     meteor_scorer._stat = types.MethodType(_stat, meteor_scorer)
     meteor_scores = []
+    count = 0
+    eval_line = 'EVAL'
+    meteor_scorer.lock.acquire()
     for step, batch in enumerate(tqdm(val_dataloader, desc="Iteration")):
         out_dict[step] = {}
         
@@ -552,7 +555,7 @@ def eval_epoch(model, loss_fn, loss_img_clip, loss_txt_clip, loss_clip_bart, val
         # print("keys:", list(gen_cap_ids.keys())[:10])
         gen_cap = tokenizer.batch_decode(gen_cap_ids.sequences, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
-        print(f"[DEBUG] gen_cap: {gen_cap}")
+        # print(f"[DEBUG] gen_cap: {gen_cap}")
         gen_unidecode = gen_cap
         gt_unidecode = tgt_sent[0]
 
@@ -906,10 +909,10 @@ if __name__ == "__main__":
                     entity_token_start=args.ent_start_token, 
                     entity_token_end=args.ent_end_token
                     )
-    # train_data = build_dataset(args.train_json, "train")
+    train_data = build_dataset(args.train_json, "train")
     val_data   = build_dataset(args.val_json, "val")
     test_data  = build_dataset(args.test_json, "test")  
-    train_data = build_dataset(args.train_json, "demo20")
+    # train_data = build_dataset(args.train_json, "demo20")
     # val_data   = build_dataset(args.val_json, "demo20")
     # test_data  = build_dataset(args.test_json, "demo20")  
     train_loader = DataLoader(train_data, args.train_batch_size,
