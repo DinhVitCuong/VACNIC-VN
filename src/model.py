@@ -34,6 +34,7 @@ from transformers.modeling_outputs import (
     Seq2SeqQuestionAnsweringModelOutput,
     Seq2SeqSequenceClassifierOutput,
 )
+from transformers.generation.utils import GenerationMixin
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     add_code_sample_docstrings,
@@ -979,7 +980,7 @@ class BartDecoderLayer(nn.Module):
         return outputs
 
 
-class BartPretrainedModel(PreTrainedModel):
+class BartPretrainedModel(PreTrainedModel, GenerationMixin):
     config_class = BartConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
